@@ -639,6 +639,8 @@ mod tests {
         assert_eq!(resolved, dir.path().join("sub/tool.exe"));
     }
 
+    /// Bare-name resolution with extension completion is a Windows feature.
+    #[cfg(windows)]
     #[test]
     fn locate_relative_path_inside_bin() {
         let dir = temp_dir_with_tools(&["sub/tool.exe"]);
@@ -790,6 +792,8 @@ mod tests {
         }
     }
 
+    /// Bare-name resolution with extension completion is a Windows feature.
+    #[cfg(windows)]
     #[test]
     fn remove_file() {
         let dir = temp_dir_with_tools(&["tool.exe", "other.bat"]);
@@ -982,6 +986,24 @@ mod tests {
                 toolbox(dir.path(), false).locate("tool.exe"),
                 Err(ToolboxError::ToolNotFound(_, _))
             ));
+        }
+
+        #[test]
+        fn locate_bare_name_in_subdirectory() {
+            let dir = temp_dir_with_tools(&["sub/tool"]);
+            let resolved = toolbox(dir.path(), false).locate("sub/tool").unwrap();
+            assert_eq!(resolved, dir.path().join("sub/tool"));
+        }
+
+        #[test]
+        fn remove_file_by_exact_name() {
+            let dir = temp_dir_with_tools(&["tool.exe", "other.bat"]);
+            let toolbox = toolbox(dir.path(), false);
+
+            let removed = toolbox.remove("tool.exe", false).unwrap();
+            assert_eq!(removed, dir.path().join("tool.exe"));
+            assert!(!dir.path().join("tool.exe").exists());
+            assert!(dir.path().join("other.bat").exists());
         }
     }
 }

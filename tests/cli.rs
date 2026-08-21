@@ -36,6 +36,11 @@ const CWD_ENV_BODY: &str = "@echo off\necho %CD%\necho %FOO%";
 const CWD_ENV_BODY: &str = "echo \"$PWD\"\necho \"$FOO\"";
 
 #[cfg(windows)]
+const OUTSIDE_BODY: &str = "@echo off\necho %*";
+#[cfg(not(windows))]
+const OUTSIDE_BODY: &str = "echo \"$*\"";
+
+#[cfg(windows)]
 fn write_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, body.replace('\n', "\r\n")).unwrap();
@@ -67,7 +72,10 @@ impl Toolbox {
         write_tool(dir.path(), "plain", "@exit /b 0");
         write_tool(dir.path(), CWD_ENV_TOOL, CWD_ENV_BODY);
         std::fs::create_dir(dir.path().join("scripts")).unwrap();
+        #[cfg(windows)]
         write_tool(&dir.path().join("scripts"), "sub.bat", "@echo off\necho %*");
+        #[cfg(not(windows))]
+        write_tool(&dir.path().join("scripts"), "sub", "echo \"$*\"");
         Toolbox { dir }
     }
 
@@ -299,7 +307,7 @@ fn run_escaping_path_is_rejected_by_default() {
     write_tool(
         toolbox.dir.path().parent().unwrap(),
         "outside.bat",
-        "@echo off\necho %*",
+        OUTSIDE_BODY,
     );
     let output = run_cli_in_toolbox(&toolbox, &["run", "../outside.bat", "hi"]);
     assert_eq!(output.status.code(), Some(1));
@@ -316,7 +324,7 @@ fn run_escaping_path_allowed_with_flag() {
     write_tool(
         toolbox.dir.path().parent().unwrap(),
         "outside.bat",
-        "@echo off\necho %*",
+        OUTSIDE_BODY,
     );
     let output = run_cli(&[
         "--bin-dir",
@@ -374,8 +382,17 @@ fn add_then_run_tool() {
         "stdout was: {out}"
     );
 
-    let run = run_cli_in_toolbox(&toolbox, &["run", "new-tool.bat"]);
-    assert!(run.status.success());
+    // When `add` links (Unix always, Windows without developer mode copies),
+    // the symlink points outside the toolbox, which `run` treats as escape by
+    // default; --allow-escape covers both outcomes.
+    let run = run_cli(&[
+        "--bin-dir",
+        toolbox.path().to_str().unwrap(),
+        "--allow-escape",
+        "run",
+        "new-tool.bat",
+    ]);
+    assert!(run.status.success(), "stderr was: {}", stderr(&run));
     assert!(stdout(&run).contains("added"));
 }
 
