@@ -33,7 +33,6 @@ pub const OPT_SHELL_HELP: &str = "The shell to generate completions for";
 
 pub const ARG_TOOL_HELP: &str = "Name or path of the tool";
 pub const ARG_SOURCE_HELP: &str = "File or directory to add";
-pub const ARG_PASSTHROUGH_HELP: &str = "Arguments passed through to the tool";
 
 /// Prefix printed before every error message.
 pub fn error_prefix() -> &'static str {
@@ -92,4 +91,9 @@ pub fn absolute_path_error(path: &Path, error: impl std::fmt::Display) -> String
         "failed to resolve absolute path for {}: {error}",
         path.display()
     )
+}
+
+/// Error message when the tool name is not valid UTF-8.
+pub fn tool_name_not_utf8() -> String {
+    "tool name is not valid UTF-8".to_string()
 }

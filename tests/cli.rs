@@ -41,6 +41,16 @@ const OUTSIDE_BODY: &str = "@echo off\necho %*";
 const OUTSIDE_BODY: &str = "echo \"$*\"";
 
 #[cfg(windows)]
+const REL_ADD_TOOL: &str = "rel-add.bat";
+#[cfg(not(windows))]
+const REL_ADD_TOOL: &str = "rel-add";
+
+#[cfg(windows)]
+const REL_ADD_BODY: &str = "@echo off\necho added-rel";
+#[cfg(not(windows))]
+const REL_ADD_BODY: &str = "echo \"added-rel\"";
+
+#[cfg(windows)]
 fn write_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, body.replace('\n', "\r\n")).unwrap();
@@ -105,6 +115,12 @@ fn run_cli_in_toolbox(toolbox: &Toolbox, args: &[&str]) -> Output {
     full.extend(args.iter().map(|a| a.to_string()));
     let strings: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
     run_cli(&strings)
+}
+
+fn run_cli_with_cwd(cwd: &Path, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_run-cli"));
+    cmd.args(args).env_remove("RUN_CLI_BIN").current_dir(cwd);
+    cmd.output().expect("failed to spawn run-cli")
 }
 
 fn stderr(output: &Output) -> String {
@@ -207,6 +223,44 @@ fn run_tool_preserves_double_dash_after_tool() {
     let out = stdout(&output);
     assert!(out.contains("--"), "stdout was: {out}");
     assert!(out.contains("--help"), "stdout was: {out}");
+}
+
+#[cfg(windows)]
+const DASH_TOOL: &str = "-weird.bat";
+#[cfg(not(windows))]
+const DASH_TOOL: &str = "-weird";
+
+#[test]
+fn run_double_dash_escapes_hyphen_prefixed_tool() {
+    let toolbox = Toolbox::new();
+    write_tool(toolbox.path(), DASH_TOOL, ECHO_BODY);
+
+    let output = run_cli_in_toolbox(&toolbox, &["run", "--", DASH_TOOL, "hi"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}; stdout: {}",
+        stderr(&output),
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("hi"),
+        "stdout was: {}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn run_help_flags_before_tool_are_rejected() {
+    let toolbox = Toolbox::new();
+    for args in [
+        ["run", "--help"],
+        ["run", "-h"],
+        ["run", "--version"],
+        ["run", "-V"],
+    ] {
+        let output = run_cli_in_toolbox(&toolbox, &args);
+        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
+    }
 }
 
 #[test]
@@ -422,6 +476,38 @@ fn add_then_run_tool() {
     ]);
     assert!(run.status.success(), "stderr was: {}", stderr(&run));
     assert!(stdout(&run).contains("added"));
+}
+
+#[test]
+fn add_relative_source_creates_working_entry() {
+    // Regression: the symlink target used to be the source path verbatim, so a
+    // relative source resolved against the toolbox directory and dangled. The
+    // source is now absolutized before linking/copying.
+    let toolbox = Toolbox::new();
+    let workdir = TempDir::new().unwrap();
+    write_tool(workdir.path(), REL_ADD_TOOL, REL_ADD_BODY);
+
+    let output = run_cli_with_cwd(
+        workdir.path(),
+        &[
+            "--bin-dir",
+            toolbox.path().to_str().unwrap(),
+            "add",
+            REL_ADD_TOOL,
+        ],
+    );
+    assert!(output.status.success(), "stderr was: {}", stderr(&output));
+
+    // Works for both outcomes: symlink with an absolute target and copy.
+    let run = run_cli(&[
+        "--bin-dir",
+        toolbox.path().to_str().unwrap(),
+        "--allow-escape",
+        "run",
+        REL_ADD_TOOL,
+    ]);
+    assert!(run.status.success(), "stderr was: {}", stderr(&run));
+    assert!(stdout(&run).contains("added-rel"));
 }
 
 #[test]

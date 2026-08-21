@@ -3,41 +3,59 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use crate::EXIT_ERROR;
 use crate::commands::{Context, resolve_absolute};
 use crate::error::Error;
 use crate::messages;
 use crate::runner::{self, Invocation, RunOptions};
 
+/// The tool to run and its arguments, captured verbatim by clap.
+///
+/// clap's `external_subcommand` mechanism treats the first token that is not
+/// one of run-cli's own options as the tool name and collects everything after
+/// it (including `--` and flags overlapping with run-cli's options) as raw
+/// `OsString`s without any further option parsing.
+#[derive(Debug, Clone, clap::Parser)]
+pub enum ExternalCommand {
+    /// The tool name followed by every argument passed through to it.
+    #[command(external_subcommand)]
+    Cmd(Vec<OsString>),
+}
+
 /// Arguments for `run-cli run`.
 ///
 /// `--cwd` / `--env` are run-cli's own options and must appear before the
 /// tool name; everything after the tool name is passed through verbatim
-/// (uv-style, enforced by the argv splitter in `cli.rs`).
+/// (uv-style, via clap's external subcommand).
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    /// Name or path of the tool to run.
-    #[arg(value_name = "TOOL", help = messages::ARG_TOOL_HELP)]
-    pub tool: String,
     /// Run the tool in this working directory.
     #[arg(long, value_name = "DIR", help = messages::OPT_CWD_HELP)]
     pub cwd: Option<PathBuf>,
     /// Set an environment variable for the tool, as KEY=VALUE; repeatable.
     #[arg(long, value_name = "KEY=VALUE", help = messages::OPT_ENV_HELP)]
     pub env: Vec<String>,
-    /// Arguments passed through to the tool.
-    #[arg(value_name = "ARGS", help = messages::ARG_PASSTHROUGH_HELP, trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<OsString>,
+    /// The tool to run; everything after the tool name is passed through.
+    #[command(subcommand)]
+    pub command: ExternalCommand,
 }
 
 /// Resolve and run the tool, returning its exit code.
-pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
+pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
+    let ExternalCommand::Cmd(command) = args.command;
+    let (tool, passthrough) = command
+        .split_first()
+        .expect("required external command always carries a tool name");
+    let tool = tool
+        .to_str()
+        .ok_or_else(|| Error::formatted(EXIT_ERROR, messages::tool_name_not_utf8()))?;
     // Absolutize before spawning so that a relative tool path (e.g. from a
     // relative toolbox directory) is not resolved against the child's `--cwd`.
-    let absolute = resolve_absolute(&context.toolbox, &args.tool)?;
+    let absolute = resolve_absolute(&context.toolbox, tool)?;
     let invocation = Invocation::from_path(absolute);
     let options = RunOptions {
         cwd: args.cwd,
         env: runner::parse_env_pairs(&args.env)?,
     };
-    Ok(runner::execute(&invocation, &args.args, &options)?)
+    Ok(runner::execute(&invocation, passthrough, &options)?)
 }

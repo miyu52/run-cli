@@ -82,6 +82,9 @@ pub enum ToolboxError {
     /// Canonicalizing a path failed.
     #[error("failed to canonicalize {0}: {1}")]
     CanonicalizeError(PathBuf, #[source] std::io::Error),
+    /// Making a path absolute failed.
+    #[error("failed to resolve absolute path for {0}: {1}")]
+    AbsolutePathError(PathBuf, #[source] std::io::Error),
     /// The requested tool does not exist in the toolbox.
     #[error("tool not found in {0}: {1}")]
     ToolNotFound(PathBuf, String),
@@ -293,8 +296,10 @@ impl Toolbox {
     /// A symlink is created when possible; otherwise the source is copied
     /// (directories recursively). The toolbox directory is created when
     /// missing. `name` defaults to the source file name and must be a single
-    /// file name (no path separators). Returns the outcome and the destination
-    /// path.
+    /// file name (no path separators). The source is absolutized first, so a
+    /// relative source never yields a dangling symlink (link targets resolve
+    /// relative to the link's own directory, the toolbox). Returns the outcome
+    /// and the destination path.
     pub fn add(
         &self,
         source: &Path,
@@ -303,6 +308,8 @@ impl Toolbox {
         if !source.exists() {
             return Err(ToolboxError::AddSourceMissing(source.to_path_buf()));
         }
+        let source = std::path::absolute(source)
+            .map_err(|e| ToolboxError::AbsolutePathError(source.to_path_buf(), e))?;
         let name = match name {
             Some(name) => name.to_string(),
             None => source
@@ -320,11 +327,11 @@ impl Toolbox {
         fs::create_dir_all(&self.dir)
             .map_err(|e| ToolboxError::CreateBinDirError(self.dir.clone(), e))?;
 
-        match create_link(source, &dest) {
+        match create_link(&source, &dest) {
             Ok(()) => Ok((AddOutcome::Linked, dest)),
-            Err(_) => copy_recursive(source, &dest)
+            Err(_) => copy_recursive(&source, &dest)
                 .map(|()| (AddOutcome::Copied, dest.clone()))
-                .map_err(|e| ToolboxError::CopyError(source.to_path_buf(), dest, e)),
+                .map_err(|e| ToolboxError::CopyError(source, dest, e)),
         }
     }
 
@@ -418,76 +425,107 @@ impl Toolbox {
 /// Display form of a canonicalized path; on Windows strips the `\\?\`
 /// extended-length prefix `fs::canonicalize` produces.
 fn display_path(path: &Path) -> String {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy();
-        text.strip_prefix(r"\\?\")
-            .map(|stripped| stripped.to_string())
-            .unwrap_or_else(|| text.into_owned())
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_string_lossy().into_owned()
-    }
+    fsutil::display_path(path)
 }
 
 fn validate_name(name: &str) -> Result<(), ToolboxError> {
-    let path = Path::new(name);
-    let valid = !name.is_empty()
-        && path.components().count() == 1
-        && !matches!(
-            path.components().next(),
-            Some(Component::CurDir | Component::ParentDir)
-        );
-    if valid {
-        Ok(())
-    } else {
-        Err(ToolboxError::InvalidToolName(name.to_string()))
-    }
+    fsutil::validate_name(name)
 }
 
-#[cfg(unix)]
 fn create_link(source: &Path, dest: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(source, dest)
+    fsutil::create_link(source, dest)
 }
 
-#[cfg(windows)]
-fn create_link(source: &Path, dest: &Path) -> std::io::Result<()> {
-    let metadata = fs::metadata(source)?;
-    if metadata.is_dir() {
-        std::os::windows::fs::symlink_dir(source, dest)
-    } else {
-        std::os::windows::fs::symlink_file(source, dest)
-    }
-}
-
-/// Remove a symlink entry without following it into its target.
-#[cfg(unix)]
 fn remove_link(path: &Path) -> std::io::Result<()> {
-    fs::remove_file(path)
-}
-
-#[cfg(windows)]
-fn remove_link(path: &Path) -> std::io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            // Directory symlinks require remove_dir; fall back for files.
-            fs::remove_dir(path).or_else(|_| fs::remove_file(path))
-        }
-        _ => fs::remove_file(path),
-    }
+    fsutil::remove_link(path)
 }
 
 fn copy_recursive(source: &Path, dest: &Path) -> std::io::Result<()> {
-    if source.is_dir() {
-        fs::create_dir_all(dest)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+    fsutil::copy_recursive(source, dest)
+}
+
+/// Platform-specific filesystem helpers used by toolbox operations.
+mod fsutil {
+    use std::fs;
+    use std::io;
+    use std::path::{Component, Path};
+
+    use super::ToolboxError;
+
+    /// Display form of a canonicalized path; on Windows strips the `\\?\`
+    /// extended-length prefix `fs::canonicalize` produces.
+    pub(super) fn display_path(path: &Path) -> String {
+        #[cfg(windows)]
+        {
+            let text = path.to_string_lossy();
+            text.strip_prefix(r"\\?\")
+                .map(|stripped| stripped.to_string())
+                .unwrap_or_else(|| text.into_owned())
         }
-        Ok(())
-    } else {
-        fs::copy(source, dest).map(|_| ())
+        #[cfg(not(windows))]
+        {
+            path.to_string_lossy().into_owned()
+        }
+    }
+
+    pub(super) fn validate_name(name: &str) -> Result<(), ToolboxError> {
+        let path = Path::new(name);
+        let valid = !name.is_empty()
+            && path.components().count() == 1
+            && !matches!(
+                path.components().next(),
+                Some(Component::CurDir | Component::ParentDir)
+            );
+        if valid {
+            Ok(())
+        } else {
+            Err(ToolboxError::InvalidToolName(name.to_string()))
+        }
+    }
+
+    #[cfg(unix)]
+    pub(super) fn create_link(source: &Path, dest: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(source, dest)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn create_link(source: &Path, dest: &Path) -> io::Result<()> {
+        let metadata = fs::metadata(source)?;
+        if metadata.is_dir() {
+            std::os::windows::fs::symlink_dir(source, dest)
+        } else {
+            std::os::windows::fs::symlink_file(source, dest)
+        }
+    }
+
+    /// Remove a symlink entry without following it into its target.
+    #[cfg(unix)]
+    pub(super) fn remove_link(path: &Path) -> io::Result<()> {
+        fs::remove_file(path)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn remove_link(path: &Path) -> io::Result<()> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                // Directory symlinks require remove_dir; fall back for files.
+                fs::remove_dir(path).or_else(|_| fs::remove_file(path))
+            }
+            _ => fs::remove_file(path),
+        }
+    }
+
+    pub(super) fn copy_recursive(source: &Path, dest: &Path) -> io::Result<()> {
+        if source.is_dir() {
+            fs::create_dir_all(dest)?;
+            for entry in fs::read_dir(source)? {
+                let entry = entry?;
+                copy_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+            }
+            Ok(())
+        } else {
+            fs::copy(source, dest).map(|_| ())
+        }
     }
 }
 

@@ -25,8 +25,8 @@ cargo fmt                      # 必须保持格式化一致
 
 | 模块 | 职责 | 依赖平台 |
 | --- | --- | --- |
-| `src/cli.rs` | clap 定义与命令分发（薄层，不写命令逻辑），含解析单元测试 | 纯逻辑 |
-| `src/commands/` | 每个子命令一个模块（`Args` + `run`）；`mod.rs` 提供共享 `Context`（bin-dir + allow_escape）与 `locate_tool`/`tool_not_found_error` | 纯逻辑 |
+| `src/cli.rs` | clap 定义与命令分发（薄层，不写命令逻辑），含解析单元测试；`run` 透传基于 clap `external_subcommand`（见 `commands/run.rs`） | 纯逻辑 |
+| `src/commands/` | 每个子命令一个模块（`Args` + 入口函数）；`mod.rs` 提供共享 `Context`（bin-dir + allow_escape）与 `locate_tool`/`tool_not_found_error` | 纯逻辑 |
 | `src/toolbox.rs` | 工具箱目录模型：`Toolbox`（resolve/list/locate/add/remove）、扩展名搜索、containment 校验 | 纯逻辑（含 cfg 分支） |
 | `src/runner.rs` | `Invocation`（Direct / PowerShell）、`RunOptions`（--cwd/--env）、执行与退出码透传（参数为 `&[OsString]`，保持透传逐字节） | `#[cfg(windows)]` 分支 |
 | `src/suggest.rs` | 未找到工具时的拼写建议（Levenshtein ≤ 2，strsim） | 纯逻辑 |
@@ -37,18 +37,18 @@ cargo fmt                      # 必须保持格式化一致
 设计约定：
 
 - 纯逻辑模块必须可直接单测；新增逻辑优先拆到纯模块并补单元测试。
-- 每个子命令对应 `src/commands/` 下的一个模块（`Args` 参数结构 + `run(args, &Context) -> Result<i32, Error>`，`run` 返回透传的退出码）；新增命令时在 `src/commands/` 加模块、`cli.rs` 的 `Command` 枚举加变体 + 分发 + 解析单测 + `tests/cli.rs` 集成测试。
+- 每个子命令对应 `src/commands/` 下的一个模块（`Args` 参数结构 + 入口函数 `run`/`execute(args, &Context) -> Result<i32, Error>`，返回透传的退出码）；新增命令时在 `src/commands/` 加模块、`cli.rs` 的 `Command` 枚举加变体 + 分发 + 解析单测 + `tests/cli.rs` 集成测试。
 - **用户可见文本**分两类，规则如下：① clap 帮助与命令输出格式**必须**定义在 `src/messages.rs`，调用点只引用它（帮助文本用 `const` 常量、运行时消息用 `pub fn`）；② 错误 Display 文本由 thiserror 属性**集中定义在** `error.rs`/`toolbox.rs`/`runner.rs` 的枚举变体上，禁止在命令模块内联 `format!` 构造面向用户的错误字符串（如确实需要运行时格式化的错误消息，放入 `messages.rs`）。禁止在其他文件出现面向用户的裸字符串。`messages.rs` 声明了 `#![allow(missing_docs)]`，其余模块受 `lib.rs` 的 `#![warn(missing_docs)]` 约束（零警告为准）。
-- 错误处理：统一 `Error` 枚举（`error.rs`）。退出码约定：0 成功 / 1 运行出错 / 2 用法错误（clap 自动）/ 127 工具未找到（`EXIT_TOOL_NOT_FOUND`）。"未找到"的富错误消息（含拼写建议与可用工具列表）通过 `commands::tool_not_found_error` 构造，避免在多个命令中重复。
+- 错误处理：统一 `Error` 枚举（`error.rs`）。退出码约定：0 成功 / 1 运行出错 / 2 用法错误（clap 自动）/ 127 工具未找到（`EXIT_TOOL_NOT_FOUND`）。"未找到"的富错误消息（含拼写建议与可用工具列表）通过 `commands::tool_not_found_error` 构造为 `Error::RichToolNotFound`（与领域错误 `ToolboxError::ToolNotFound` 区分，二者退出码都是 127），避免在多个命令中重复。
 - 退出码经 `ExitCode::from(code as u8)` 截断为 8 位，属平台限制，README 已文档化，不要"修复"。
 - 路径边界：`Toolbox::locate` 默认要求解析结果位于工具箱内（`canonicalize` 校验，`ToolboxError::EscapeAttempted`），`--allow-escape` 放开；绝对路径输入同样受边界约束。**不要用 `Path::canonicalize` 的结果直接展示给用户**——Windows 上会带 `\\?\` 前缀，需经 `toolbox.rs::display_path` 剥离。
-- `run` 的透传规则（uv 风格，改参数定义时保持测试同步）：`--cwd`/`--env` 是 run-cli 自身选项，**必须放在工具名之前**；工具名（第一个非选项 token）之后的一切参数原样透传（含 `--`、含与 run-cli 选项重名的 flag）。工具名前出现 `--` 时其后第一个 token 视为工具名（转义 `-` 开头的名字）。实现：`cli.rs::split_run_args` 预分割 argv，透传段不经过 clap，解析后手工注入 `args`；重建 argv 时在 tool 前加 `--` 分隔符（`tool` 位置参数因此**不要**加 `allow_hyphen_values`，否则未知选项会被吞成工具名）。**分割器中硬编码的选项集合必须与 clap 定义同步**（全局：`-b`/`--bin-dir`/`--allow-escape`；run：`--cwd`/`--env`）。对应测试：`cli.rs::split_*`、`cli.rs::run_*`、`tests/cli.rs::run_tool_*`。
+- `run` 的透传规则（uv 风格，改参数定义时保持测试同步）：`--cwd`/`--env` 是 run-cli 自身选项，**必须放在工具名之前**；工具名（第一个非自有选项 token）之后的一切参数原样透传（含 `--`、含与 run-cli 选项重名的 flag）。工具名前出现 `--` 时其后第一个 token 视为工具名（转义 `-` 开头的名字）。实现：clap `external_subcommand`（`commands::run::ExternalCommand::Cmd(Vec<OsString>)`）——clap 遇到第一个非自有选项的 token 即把其后所有原始参数逐字节捕获，不再做任何选项解析；新增 run 自身选项只需加在 `Args` 上（工具名前被 clap 消费、工具名后自动透传），无需手动同步。对应测试：`cli.rs::run_*`、`tests/cli.rs::run_tool_*`。
 - `add`：优先 symlink（Windows 无权限时静默降级为复制，目录递归），返回 `(AddOutcome, PathBuf)`；名字必须是纯文件名（禁路径分隔符）。
 - `remove`：文件经 `locate` 解析（含扩展名补全）；目录按精确名匹配且需 `--recursive`。指向工具箱外部的 symlink 条目删除的是**链接本身**（绝不动目标），见关键技术约束 7。
 
 ## 关键技术约束（踩过的坑，不要重犯）
 
-1. **clap `trailing_var_arg` 只对"未声明的参数"透传**：声明过的选项（如 `--cwd`/`--env`）即使在位置参数之后仍会被 clap 消费，所以 `run` 的 uv 风格透传靠 `cli.rs::split_run_args` 预分割实现，透传段完全不经过 clap；不要在 RunArgs 的 `tool` 上加 `allow_hyphen_values`（会把工具名前的未知选项吞成工具名）。
+1. **`run` 的 uv 风格透传用 clap `external_subcommand` 实现，不要手写 argv 分割器**：`commands::run::ExternalCommand` 的 `Cmd(Vec<OsString>)` 把工具名（第一个非自有选项的 token）之后的一切参数原样捕获（含 `--`、含与 run-cli 选项重名的 flag），无需与 clap 定义保持任何手工同步。注意：① `run` 必须 `disable_help_subcommand = true`，否则 clap 自动生成的 `help` 子命令会拦截名为 `help` 的工具；② `disable_help_flag` 使工具名前的 `--help`/`-h`/`--version`/`-V` 报用法错误（exit 2），工具名后的则原样透传——这是期望行为；③ 旧的 `trailing_var_arg` + 预分割方案已废弃（声明过的选项在位置参数之后仍会被 clap 消费，`split_run_args` 已被删除），不要再回退。
 2. **`use clap::Args;` 与 `pub struct Args` 同名冲突**：命令模块的 Args 结构用全限定 `#[derive(Debug, clap::Args)]`，不要 `use clap::Args`。
 3. **`DirEntry::file_type()` 与 `DirEntry::metadata()` 不跟随符号链接（Unix 上为 lstat 语义）**：`Toolbox::list` 必须用 `fs::metadata(entry.path())`（stat 语义，双平台跟随），否则 `add` 创建的符号链接工具不会出现在 `list` 里（Windows 上 `DirEntry::metadata()` 跟随链接、Unix 上不跟随，行为不一致，只测 Windows 测不出来）。
 4. **`Path::join` 遇绝对路径会整体替换**：`dir.join("C:\\x")` 得到 `C:\x`，remove/add 等操作必须校验绝对路径或依赖 `ensure_within` 兜底。
@@ -56,6 +56,7 @@ cargo fmt                      # 必须保持格式化一致
 6. **Windows 符号链接需要开发者模式/管理员权限**：集成测试与 CI 上 `add` 可能降级为复制，测试断言必须兼容两种结果（`linked` 或 `copied`）。
 7. **`remove` 指向外部的 symlink 时删除的是链接本身**：`locate` 会对目标做 containment 校验并报 `EscapeAttempted`，但该条目在工具箱内、删链接不会动目标，所以 `remove` 命中 `EscapeAttempted` 时改用 `find_candidate` + `is_lexically_within` 确认条目不逃逸后直接删链接；绝对外部路径仍拒绝。目录 symlink 用 `remove_link`（Windows 目录链接需 `remove_dir`，文件链接 `remove_file`）。
 8. **相对工具路径 + `--cwd` 会解析错位（Unix）**：`Toolbox::locate` 对相对 bin-dir 返回相对路径，Unix 上 spawn 时若先设了子进程 `current_dir`，`execvp` 会把相对路径相对新 cwd 解析导致 spawn 失败（Windows 上 Rust std 已按父进程 cwd 绝对化程序路径，无此问题，但绝对化后行为一致更稳妥）。`run` 在 spawn 前必须用 `std::path::absolute` 绝对化（`which` 同样绝对化输出；`std::path::absolute` 不产生 `\\?\` 前缀，与 `canonicalize` 不同）。回归测试：`tests/cli.rs::run_with_cwd_and_relative_bin_dir`。
+9. **`add` 的相对路径源会创建悬空 symlink**：symlink 目标按"链接所在目录"（即工具箱目录）解析，所以 `add` 必须先 `std::path::absolute` 绝对化 source 再创建链接/复制——否则 cwd ≠ 工具箱目录时相对源会生成悬空链接（Windows 无开发者模式降级复制时不受影响）。回归测试：`tests/cli.rs::add_relative_source_creates_working_entry`。
 
 ## 手工验证
 

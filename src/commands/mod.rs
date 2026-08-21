@@ -60,7 +60,7 @@ pub fn map_tool_not_found(toolbox: &Toolbox, name: &str) -> Error {
 /// Build the exit-127 error message for an unresolvable tool name.
 pub fn tool_not_found_error(toolbox: &Toolbox, name: &str) -> Error {
     let available = toolbox.list_names().unwrap_or_default();
-    Error::ToolNotFound {
+    Error::RichToolNotFound {
         message: messages::tool_not_found(
             name,
             toolbox.dir(),

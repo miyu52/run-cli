@@ -22,9 +22,10 @@ pub enum Error {
     #[error("{0}")]
     Serialize(#[from] serde_json::Error),
     /// An unresolvable tool name, with a rich message (spelling suggestion and
-    /// available tools).
+    /// available tools). Distinct from [`ToolboxError::ToolNotFound`], which is
+    /// the plain domain error; this variant carries the pre-formatted message.
     #[error("{message}")]
-    ToolNotFound {
+    RichToolNotFound {
         /// Message printed to stderr.
         message: String,
     },
@@ -51,7 +52,7 @@ impl Error {
     pub fn code(&self) -> i32 {
         match self {
             Error::Toolbox(ToolboxError::ToolNotFound(..)) => EXIT_TOOL_NOT_FOUND,
-            Error::ToolNotFound { .. } => EXIT_TOOL_NOT_FOUND,
+            Error::RichToolNotFound { .. } => EXIT_TOOL_NOT_FOUND,
             Error::Formatted { code, .. } => *code,
             _ => EXIT_ERROR,
         }
