@@ -1,0 +1,27 @@
+[package]
+name = "run-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Manage and run tools from a toolbox directory"
+authors = ["miyu52"]
+license = "MIT"
+publish = false
+keywords = ["cli", "toolbox", "runner"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strsim = "0.11"
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
