@@ -86,6 +86,9 @@ pub enum RunError {
     /// The tool name is not valid UTF-8.
     #[error("tool name is not valid UTF-8")]
     ToolNameNotUtf8,
+    /// No tool name was captured (defensive; clap normally rejects this).
+    #[error("no tool name given; expected `run-cli run <tool> [args...]`")]
+    MissingToolName,
 }
 
 /// Options controlling how a tool is executed.

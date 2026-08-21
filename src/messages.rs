@@ -6,7 +6,40 @@
 
 #![allow(missing_docs)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use crate::toolbox::{Tool, ToolKind};
+
+/// Serialized form of a toolbox entry for `list --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolJson {
+    /// Entry name.
+    pub name: String,
+    /// Full path of the entry.
+    pub path: PathBuf,
+    /// Whether the entry is a file or a directory.
+    #[serde(rename = "kind")]
+    kind: &'static str,
+    /// Size in bytes for files; omitted for directories.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+}
+
+impl From<&Tool> for ToolJson {
+    fn from(tool: &Tool) -> Self {
+        ToolJson {
+            name: tool.name.clone(),
+            path: tool.path.clone(),
+            kind: match tool.kind {
+                ToolKind::File => "file",
+                ToolKind::Directory => "directory",
+            },
+            size: tool.size,
+        }
+    }
+}
 
 pub const APP_ABOUT: &str = "Manage and run tools from a toolbox directory";
 

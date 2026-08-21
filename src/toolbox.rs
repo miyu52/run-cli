@@ -15,8 +15,8 @@ use std::env;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
-use serde::Serialize;
 use thiserror::Error;
 
 /// Default toolbox directory when neither the CLI flag nor the environment
@@ -35,7 +35,7 @@ pub const TOOL_EXTENSIONS: &[&str] = &["exe", "bat", "cmd", "ps1"];
 pub const TOOL_EXTENSIONS: &[&str] = &[];
 
 /// An entry of the toolbox directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tool {
     /// File name (or directory name) inside the toolbox.
     pub name: String,
@@ -44,13 +44,11 @@ pub struct Tool {
     /// Whether the entry is a file or a directory.
     pub kind: ToolKind,
     /// Size in bytes for files; `None` for directories.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
 }
 
 /// Whether a toolbox entry is a file or a directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
     /// Regular file.
     File,
@@ -124,6 +122,9 @@ pub enum ToolboxError {
 pub struct Toolbox {
     dir: PathBuf,
     allow_escape: bool,
+    /// Canonicalized toolbox directory, cached so containment checks do not
+    /// re-canonicalize the (unchanging) base directory on every lookup.
+    canonical_dir: OnceLock<PathBuf>,
 }
 
 /// Resolve the toolbox directory with priority: CLI arg > `RUN_CLI_BIN` >
@@ -149,6 +150,7 @@ impl Toolbox {
         Toolbox {
             dir: resolve_bin_dir(cli_bin_dir),
             allow_escape,
+            canonical_dir: OnceLock::new(),
         }
     }
 
@@ -275,10 +277,19 @@ impl Toolbox {
         if self.allow_escape {
             return Ok(candidate.to_path_buf());
         }
-        let base = fs::canonicalize(&self.dir).map_err(|e| match e.kind() {
-            ErrorKind::NotFound => ToolboxError::MissingDirectory(self.dir.clone()),
-            _ => ToolboxError::CanonicalizeError(self.dir.clone(), e),
-        })?;
+        let base = match self.canonical_dir.get() {
+            Some(base) => base.clone(),
+            None => {
+                let base = fs::canonicalize(&self.dir).map_err(|e| match e.kind() {
+                    ErrorKind::NotFound => ToolboxError::MissingDirectory(self.dir.clone()),
+                    _ => ToolboxError::CanonicalizeError(self.dir.clone(), e),
+                })?;
+                // A concurrent `set` from another thread is benign: both
+                // values canonicalize the same unchanged directory.
+                let _ = self.canonical_dir.set(base.clone());
+                base
+            }
+        };
         let canonical = fs::canonicalize(candidate)
             .map_err(|e| ToolboxError::CanonicalizeError(candidate.to_path_buf(), e))?;
         if canonical.starts_with(&base) {
@@ -346,10 +357,20 @@ impl Toolbox {
     /// target resolves outside is still removed as an entry (only the link is
     /// deleted, never its target).
     pub fn remove(&self, name: &str, recursive: bool) -> Result<PathBuf, ToolboxError> {
+        if let Some(path) = self.remove_file_entry(name)? {
+            return Ok(path);
+        }
+        self.remove_directory_entry(name, recursive)
+    }
+
+    /// Remove a file entry resolved like [`Toolbox::locate`]. Returns
+    /// `Ok(None)` when `name` is not a file (so the caller can try the
+    /// directory path).
+    fn remove_file_entry(&self, name: &str) -> Result<Option<PathBuf>, ToolboxError> {
         match self.locate(name) {
             Ok(path) => {
                 fs::remove_file(&path).map_err(|e| ToolboxError::RemoveError(path.clone(), e))?;
-                return Ok(path);
+                Ok(Some(path))
             }
             Err(ToolboxError::EscapeAttempted(..)) => {
                 // The entry exists inside the toolbox but its target resolves
@@ -365,13 +386,15 @@ impl Toolbox {
                 }
                 fs::remove_file(&candidate)
                     .map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
-                return Ok(candidate);
+                Ok(Some(candidate))
             }
-            Err(ToolboxError::ToolNotFound(..)) => {}
-            Err(err) => return Err(err),
+            Err(ToolboxError::ToolNotFound(..)) => Ok(None),
+            Err(err) => Err(err),
         }
+    }
 
-        // Not a file: a directory (or directory symlink) by exact name.
+    /// Remove a directory (or directory symlink) by exact name.
+    fn remove_directory_entry(&self, name: &str, recursive: bool) -> Result<PathBuf, ToolboxError> {
         let relative = Path::new(name);
         if relative.is_absolute() {
             return Err(ToolboxError::ToolNotFound(

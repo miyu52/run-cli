@@ -42,9 +42,10 @@ pub struct Args {
 /// Resolve and run the tool, returning its exit code.
 pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let ExternalCommand::Cmd(command) = args.command;
-    let (tool, passthrough) = command
-        .split_first()
-        .expect("required external command always carries a tool name");
+    let (tool, passthrough) = match command.split_first() {
+        Some(pair) => pair,
+        None => return Err(RunError::MissingToolName.into()),
+    };
     let tool = tool.to_str().ok_or(RunError::ToolNameNotUtf8)?;
     // Absolutize before spawning so that a relative tool path (e.g. from a
     // relative toolbox directory) is not resolved against the child's `--cwd`.
@@ -55,4 +56,23 @@ pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
         env: runner::parse_env_pairs(&args.env)?,
     };
     Ok(runner::execute(&invocation, passthrough, &options)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_external_command_is_rejected_without_panicking() {
+        let args = Args {
+            cwd: None,
+            env: Vec::new(),
+            command: ExternalCommand::Cmd(Vec::new()),
+        };
+        let context = Context::new(None, false);
+        assert!(matches!(
+            execute(args, &context),
+            Err(Error::Run(RunError::MissingToolName))
+        ));
+    }
 }

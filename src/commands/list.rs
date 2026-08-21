@@ -18,7 +18,8 @@ pub struct Args {
 pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let tools = context.toolbox.list()?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&tools)?);
+        let json: Vec<messages::ToolJson> = tools.iter().map(Into::into).collect();
+        println!("{}", serde_json::to_string_pretty(&json)?);
     } else if tools.is_empty() {
         println!("{}", messages::no_tools_found(context.toolbox.dir()));
     } else {
