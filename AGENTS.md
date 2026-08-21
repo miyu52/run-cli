@@ -60,5 +60,4 @@ cargo fmt                      # 必须保持格式化一致
 ## 手工验证
 
 - 只读命令（`list`/`which`/`completions`/`run <只读工具>`）可随意冒烟测试；`add`/`remove` 使用临时目录。
-- Windows 冒烟可用真实工具（如 `target/bin/wallpaper-cli.exe` 的只读命令 `monitors`）验证 `run` 的完整链路：`add` → `which` → `run` → `remove`。
 - 验证逃逸边界：`run ../xxx`（工具箱外真实存在的文件）默认必须报 `EscapeAttempted`（退出码 1），加 `--allow-escape` 后必须可运行。
