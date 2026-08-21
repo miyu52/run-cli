@@ -51,6 +51,16 @@ const REL_ADD_BODY: &str = "@echo off\necho added-rel";
 const REL_ADD_BODY: &str = "echo \"added-rel\"";
 
 #[cfg(windows)]
+const PLAIN_TOOL: &str = "plain.bat";
+#[cfg(not(windows))]
+const PLAIN_TOOL: &str = "plain";
+
+#[cfg(windows)]
+const PLAIN_BODY: &str = "@exit /b 0";
+#[cfg(not(windows))]
+const PLAIN_BODY: &str = "exit 0";
+
+#[cfg(windows)]
 fn write_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, body.replace('\n', "\r\n")).unwrap();
@@ -79,7 +89,7 @@ impl Toolbox {
         let dir = TempDir::new().unwrap();
         write_tool(dir.path(), ECHO_TOOL, ECHO_BODY);
         write_tool(dir.path(), EXIT_TOOL, EXIT_BODY);
-        write_tool(dir.path(), "plain", "@exit /b 0");
+        write_tool(dir.path(), PLAIN_TOOL, PLAIN_BODY);
         write_tool(dir.path(), CWD_ENV_TOOL, CWD_ENV_BODY);
         std::fs::create_dir(dir.path().join("scripts")).unwrap();
         #[cfg(windows)]
@@ -285,6 +295,25 @@ fn run_tool_in_subdirectory() {
     let output = run_cli_in_toolbox(&toolbox, &["run", "scripts/sub", "hi"]);
     assert!(output.status.success());
     assert!(stdout(&output).contains("hi"));
+}
+
+#[cfg(windows)]
+#[test]
+fn run_ps1_tool_through_powershell() {
+    // .ps1 tools are launched via `powershell -File`; bare-name resolution
+    // must find them through the extension candidates.
+    let toolbox = Toolbox::new();
+    write_tool(toolbox.path(), "greet.ps1", "Write-Output $args");
+    let output = run_cli_in_toolbox(&toolbox, &["run", "greet", "hello", "--flag"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}; stdout: {}",
+        stderr(&output),
+        stdout(&output)
+    );
+    let out = stdout(&output);
+    assert!(out.contains("hello"), "stdout was: {out}");
+    assert!(out.contains("--flag"), "stdout was: {out}");
 }
 
 #[test]

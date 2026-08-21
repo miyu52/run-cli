@@ -54,9 +54,10 @@ cargo fmt                      # 必须保持格式化一致
 4. **`Path::join` 遇绝对路径会整体替换**：`dir.join("C:\\x")` 得到 `C:\x`，remove/add 等操作必须校验绝对路径或依赖 `ensure_within` 兜底。
 5. **Windows 上 `is_file()` 大小写不敏感**（NTFS），`with_extension` 探测顺序即优先级；Unix 精确匹配，`TOOL_EXTENSIONS` 为空。
 6. **Windows 符号链接需要开发者模式/管理员权限**：集成测试与 CI 上 `add` 可能降级为复制，测试断言必须兼容两种结果（`linked` 或 `copied`）。
-7. **`remove` 指向外部的 symlink 时删除的是链接本身**：symlink 条目按其自身位置判定（`is_lexically_within`，不跟目标），`locate` 直接命中条目、`remove_file` 删的就是链接，**不需要任何特判**——绝不动目标。目录 symlink 用 `remove_link`（Windows 目录链接需 `remove_dir`，文件链接 `remove_file`）。外部绝对路径/`..` 路径由 `ensure_within` 统一报 `ToolNotFound` 拒绝。
+7. **`remove` 指向外部的 symlink 时删除的是链接本身**：symlink 条目按其自身位置判定（`is_lexically_within`，不跟目标），`locate` 直接命中条目、`remove_file` 删的就是链接，**不需要任何特判**——绝不动目标。目录 symlink 用 `remove_link`（Windows 目录链接需 `remove_dir`，文件链接 `remove_file`）。外部绝对路径/`..` 路径由 `ensure_within` 统一报 `ToolNotFound` 拒绝——注意 `remove` 的目录 symlink 分支（`remove_directory_entry`）**同样必须**先做 `is_lexically_within` 词法包含检查（回归测试：`toolbox.rs::remove_parent_dir_symlink_outside_is_not_found`，否则 `remove ../link` 会删到工具箱外的链接条目）。
 8. **相对工具路径 + `--cwd` 会解析错位（Unix）**：`Toolbox::locate` 对相对 bin-dir 返回相对路径，Unix 上 spawn 时若先设了子进程 `current_dir`，`execvp` 会把相对路径相对新 cwd 解析导致 spawn 失败（Windows 上 Rust std 已按父进程 cwd 绝对化程序路径，无此问题，但绝对化后行为一致更稳妥）。`run` 在 spawn 前必须用 `std::path::absolute` 绝对化（`which` 同样绝对化输出；`std::path::absolute` 不产生 `\\?\` 前缀，与 `canonicalize` 不同）。回归测试：`tests/cli.rs::run_with_cwd_and_relative_bin_dir`。
 9. **`add` 的相对路径源会创建悬空 symlink**：symlink 目标按"链接所在目录"（即工具箱目录）解析，所以 `add` 必须先 `std::path::absolute` 绝对化 source 再创建链接/复制——否则 cwd ≠ 工具箱目录时相对源会生成悬空链接（Windows 无开发者模式降级复制时不受影响）。回归测试：`tests/cli.rs::add_relative_source_creates_working_entry`。
+10. **`list` 跳过悬空符号链接**：`fs::metadata` 对断链返回 `NotFound`，`Toolbox::list` 对该条目 `continue` 跳过（其余条目照常列出），其他读错误仍整体报错——避免一条断链让 `list` 与拼写建议（`list_names`）全部失效。回归测试：`toolbox.rs::list_skips_broken_symlink`。
 
 ## 手工验证
 

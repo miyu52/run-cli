@@ -155,8 +155,9 @@ impl Toolbox {
     }
 
     /// List the contents of the toolbox directory (files and directories,
-    /// sorted by name, absolute paths). Symlinks are followed; entries that
-    /// cannot be read are reported as an error rather than skipped.
+    /// sorted by name, absolute paths). Symlinks are followed; dangling
+    /// symlinks cannot be followed and are skipped so one broken entry does
+    /// not hide the rest; other read errors are reported as an error.
     pub fn list(&self) -> Result<Vec<Tool>, ToolboxError> {
         let entries = fs::read_dir(&self.dir).map_err(|e| match e.kind() {
             ErrorKind::NotFound => ToolboxError::MissingDirectory(self.dir.clone()),
@@ -174,8 +175,13 @@ impl Toolbox {
             // listing consistent with `which` regardless of the bin-dir form.
             let path = std::path::absolute(entry.path())
                 .map_err(|e| ToolboxError::ReadError(self.dir.clone(), e))?;
-            let metadata =
-                fs::metadata(&path).map_err(|e| ToolboxError::ReadError(self.dir.clone(), e))?;
+            let metadata = match fs::metadata(&path) {
+                Ok(meta) => meta,
+                // `fs::metadata` follows symlinks; a dangling link reports
+                // NotFound and is skipped instead of failing the listing.
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => return Err(ToolboxError::ReadError(self.dir.clone(), e)),
+            };
             if metadata.is_file() {
                 tools.push(Tool {
                     name,
@@ -397,6 +403,16 @@ impl Toolbox {
             }
         };
         if meta.file_type().is_symlink() {
+            // Symlink entries are judged by the link's own position, like
+            // `locate`: a lexical `..` (even one resolving back inside) is
+            // rejected, so `remove` can never touch an entry outside the
+            // toolbox directory.
+            if !self.is_lexically_within(&candidate) {
+                return Err(ToolboxError::ToolNotFound(
+                    self.dir.clone(),
+                    name.to_string(),
+                ));
+            }
             // Only directory symlinks keep the `--recursive` requirement;
             // file symlinks and broken links (whose target cannot be
             // followed) are removed without it. Removing a link never
@@ -952,7 +968,7 @@ mod tests {
         }
 
         #[test]
-        fn list_broken_symlink_is_reported_as_error() {
+        fn list_skips_broken_symlink() {
             let root = tempfile::TempDir::new().unwrap();
             let bin = root.path().join("bin");
             std::fs::create_dir(&bin).unwrap();
@@ -960,10 +976,9 @@ mod tests {
                 .unwrap();
             std::fs::write(bin.join("ok.exe"), "").unwrap();
 
-            assert!(matches!(
-                toolbox(&bin).list(),
-                Err(ToolboxError::ReadError(..))
-            ));
+            let tools = toolbox(&bin).list().unwrap();
+            let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, ["ok.exe"]);
         }
 
         #[test]
@@ -979,6 +994,29 @@ mod tests {
                 toolbox(&bin).remove(&outside.to_string_lossy(), false),
                 Err(ToolboxError::ToolNotFound(_, _))
             ));
+        }
+
+        #[test]
+        fn remove_parent_dir_symlink_outside_is_not_found() {
+            // Regression: the directory-symlink branch of `remove` used to
+            // skip the lexical containment check, so `remove ../link` could
+            // delete a symlink entry outside the toolbox (the link itself,
+            // never its target).
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let outside_link = root.path().join("outside-link");
+            std::os::unix::fs::symlink(root.path().join("target.exe"), &outside_link).unwrap();
+            let toolbox = toolbox(&bin);
+
+            assert!(matches!(
+                toolbox.remove("../outside-link", false),
+                Err(ToolboxError::ToolNotFound(_, _))
+            ));
+            assert!(
+                std::fs::symlink_metadata(&outside_link).is_ok(),
+                "link outside the toolbox must not be removed"
+            );
         }
 
         #[test]

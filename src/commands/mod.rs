@@ -47,11 +47,16 @@ pub fn locate_tool(toolbox: &Toolbox, name: &str) -> Result<PathBuf, Error> {
 }
 
 /// Build the error for an unresolvable tool name: a missing toolbox
-/// directory is a runtime error (exit 1), while a real "not found" produces
+/// directory is a runtime error (exit 1), a path that exists but is not a
+/// directory is also a runtime error, while a real "not found" produces
 /// the rich exit-127 message.
 pub fn map_tool_not_found(toolbox: &Toolbox, name: &str) -> Error {
-    if !toolbox.dir().is_dir() {
-        return Error::Toolbox(ToolboxError::MissingDirectory(toolbox.dir().to_path_buf()));
+    let dir = toolbox.dir();
+    if !dir.exists() {
+        return Error::Toolbox(ToolboxError::MissingDirectory(dir.to_path_buf()));
+    }
+    if !dir.is_dir() {
+        return Error::Toolbox(ToolboxError::NotADirectory(dir.to_path_buf()));
     }
     tool_not_found_error(toolbox, name)
 }
@@ -75,4 +80,44 @@ pub fn resolve_absolute(toolbox: &Toolbox, name: &str) -> Result<PathBuf, Error>
     let tool_path = locate_tool(toolbox, name)?;
     std::path::absolute(&tool_path)
         .map_err(|e| ToolboxError::AbsolutePathError(tool_path, e).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn missing_toolbox() -> Toolbox {
+        Toolbox::resolve(Some(Path::new("definitely-missing-dir")))
+    }
+
+    #[test]
+    fn map_tool_not_found_missing_dir_is_missing_directory() {
+        assert!(matches!(
+            map_tool_not_found(&missing_toolbox(), "x"),
+            Error::Toolbox(ToolboxError::MissingDirectory(_))
+        ));
+    }
+
+    #[test]
+    fn map_tool_not_found_file_is_not_a_directory() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, "").unwrap();
+        let toolbox = Toolbox::resolve(Some(&file));
+        assert!(matches!(
+            map_tool_not_found(&toolbox, "x"),
+            Error::Toolbox(ToolboxError::NotADirectory(_))
+        ));
+    }
+
+    #[test]
+    fn map_tool_not_found_existing_dir_returns_rich_error() {
+        let dir = TempDir::new().unwrap();
+        let toolbox = Toolbox::resolve(Some(dir.path()));
+        assert!(matches!(
+            map_tool_not_found(&toolbox, "x"),
+            Error::RichToolNotFound { .. }
+        ));
+    }
 }
