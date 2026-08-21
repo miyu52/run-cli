@@ -29,3 +29,11 @@ jobs:
             target/release/run-cli.exe
             target/release/run-cli
           if-no-files-found: error
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Check on MSRV
+        run: cargo check --all-targets

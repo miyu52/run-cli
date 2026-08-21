@@ -81,22 +81,12 @@ pub fn run() -> Result<i32, Error> {
             // `--` separator forces the tool name to be read as a positional
             // value (escapes `-`-prefixed tool names) while unknown options
             // before it are still rejected by clap.
-            let mut rebuilt = vec![OsString::from("run-cli")];
-            rebuilt.extend(parts.global.iter().cloned());
-            rebuilt.push(OsString::from("run"));
-            rebuilt.extend(parts.run_opts.iter().cloned());
-            rebuilt.push(OsString::from("--"));
-            rebuilt.push(parts.tool.clone());
-            Cli::try_parse_from(rebuilt).unwrap_or_else(|err| err.exit())
+            Cli::try_parse_from(rebuild_argv(parts)).unwrap_or_else(|err| err.exit())
         }
         None => Cli::parse(),
     };
-    if let (Some(parts), Command::Run(args)) = (&split, &mut cli.command) {
-        args.args = parts
-            .passthrough
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+    if let Some(parts) = &split {
+        apply_passthrough(&mut cli, parts);
     }
     let context = Context::new(cli.bin_dir.as_deref(), cli.allow_escape);
     match cli.command {
@@ -116,6 +106,28 @@ struct RunSplit {
     run_opts: Vec<OsString>,
     tool: OsString,
     passthrough: Vec<OsString>,
+}
+
+/// Rebuild the argv for clap from a [`RunSplit`], without the passthrough
+/// segment; the `--` separator forces the tool name to be read as a
+/// positional value (escapes `-`-prefixed tool names).
+fn rebuild_argv(parts: &RunSplit) -> Vec<OsString> {
+    let mut rebuilt = vec![OsString::from("run-cli")];
+    rebuilt.extend(parts.global.iter().cloned());
+    rebuilt.push(OsString::from("run"));
+    rebuilt.extend(parts.run_opts.iter().cloned());
+    rebuilt.push(OsString::from("--"));
+    rebuilt.push(parts.tool.clone());
+    rebuilt
+}
+
+/// Inject the passthrough segment of a [`RunSplit`] into a parsed `run`
+/// subcommand. Safe to call on any [`Cli`]: the splitter only produces
+/// `Some` when the arguments target `run`.
+fn apply_passthrough(cli: &mut Cli, parts: &RunSplit) {
+    if let Command::Run(args) = &mut cli.command {
+        args.args = parts.passthrough.clone();
+    }
 }
 
 /// Split raw arguments targeting the `run` subcommand.
@@ -232,25 +244,17 @@ mod tests {
         let raw: Vec<OsString> = args.iter().map(OsString::from).collect();
         let split = split_run_args(&raw);
         let mut cli = match &split {
-            Some(parts) => {
-                let mut rebuilt = vec![OsString::from("run-cli")];
-                rebuilt.extend(parts.global.iter().cloned());
-                rebuilt.push(OsString::from("run"));
-                rebuilt.extend(parts.run_opts.iter().cloned());
-                rebuilt.push(OsString::from("--"));
-                rebuilt.push(parts.tool.clone());
-                Cli::try_parse_from(rebuilt)?
-            }
+            Some(parts) => Cli::try_parse_from(rebuild_argv(parts))?,
             None => parse(args)?,
         };
-        if let (Some(parts), Command::Run(run_args)) = (&split, &mut cli.command) {
-            run_args.args = parts
-                .passthrough
-                .iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
+        if let Some(parts) = &split {
+            apply_passthrough(&mut cli, parts);
         }
         Ok(cli)
+    }
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
     }
 
     fn run_args_of(cli: &Cli) -> &commands::run::Args {
@@ -307,14 +311,14 @@ mod tests {
         let cli = parse_run(&["run", "example", "--help", "-v", "x"]).unwrap();
         let args = run_args_of(&cli);
         assert_eq!(args.tool, "example");
-        assert_eq!(args.args, ["--help", "-v", "x"]);
+        assert_eq!(args.args, os_args(&["--help", "-v", "x"]));
     }
 
     #[test]
     fn run_double_dash_after_tool_is_preserved() {
         let cli = parse_run(&["run", "example", "--", "--help"]).unwrap();
         let args = run_args_of(&cli);
-        assert_eq!(args.args, ["--", "--help"]);
+        assert_eq!(args.args, os_args(&["--", "--help"]));
     }
 
     #[test]
@@ -327,7 +331,7 @@ mod tests {
         assert_eq!(args.cwd.as_deref().unwrap().as_os_str(), "work");
         assert_eq!(args.env, ["A=1", "B=2"]);
         assert_eq!(args.tool, "tool");
-        assert_eq!(args.args, ["-q"]);
+        assert_eq!(args.args, os_args(&["-q"]));
     }
 
     #[test]
@@ -336,7 +340,7 @@ mod tests {
         let args = run_args_of(&cli);
         assert!(args.cwd.is_none());
         assert!(args.env.is_empty());
-        assert_eq!(args.args, ["--cwd", "x", "--env", "A=1"]);
+        assert_eq!(args.args, os_args(&["--cwd", "x", "--env", "A=1"]));
     }
 
     #[test]
@@ -345,7 +349,7 @@ mod tests {
         let args = run_args_of(&cli);
         assert_eq!(args.cwd.as_deref().unwrap().as_os_str(), "x");
         assert!(args.env.is_empty());
-        assert_eq!(args.args, ["-q", "--env", "A=1"]);
+        assert_eq!(args.args, os_args(&["-q", "--env", "A=1"]));
     }
 
     #[test]
@@ -353,7 +357,7 @@ mod tests {
         let cli = parse_run(&["run", "example", "--bin-dir", "x"]).unwrap();
         let args = run_args_of(&cli);
         assert!(cli.bin_dir.is_none());
-        assert_eq!(args.args, ["--bin-dir", "x"]);
+        assert_eq!(args.args, os_args(&["--bin-dir", "x"]));
     }
 
     #[test]

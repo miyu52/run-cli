@@ -5,6 +5,7 @@
 //! process exit codes on most systems); codes outside that range are
 //! truncated.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,7 +46,7 @@ impl Invocation {
         }
     }
 
-    fn build_command(&self, args: &[String]) -> Command {
+    fn build_command(&self, args: &[OsString]) -> Command {
         match self {
             Invocation::Direct(path) => {
                 let mut cmd = Command::new(path);
@@ -76,6 +77,9 @@ pub enum RunError {
     /// A `--env` value is not of the form `KEY=VALUE`.
     #[error("invalid --env value '{0}'; expected KEY=VALUE")]
     InvalidEnv(String),
+    /// A `--env` value has an empty key.
+    #[error("invalid --env value '{0}'; key must not be empty")]
+    EmptyEnvKey(String),
 }
 
 /// Options controlling how a tool is executed.
@@ -87,15 +91,19 @@ pub struct RunOptions {
     pub env: Vec<(String, String)>,
 }
 
-/// Parse `--env` values of the form `KEY=VALUE`.
+/// Parse `--env` values of the form `KEY=VALUE`, rejecting empty keys.
 pub fn parse_env_pairs(values: &[String]) -> Result<Vec<(String, String)>, RunError> {
     values
         .iter()
         .map(|value| {
-            value
+            let (key, value) = value
                 .split_once('=')
                 .map(|(key, value)| (key.to_string(), value.to_string()))
-                .ok_or_else(|| RunError::InvalidEnv(value.clone()))
+                .ok_or_else(|| RunError::InvalidEnv(value.clone()))?;
+            if key.is_empty() {
+                return Err(RunError::EmptyEnvKey(value.clone()));
+            }
+            Ok((key, value))
         })
         .collect()
 }
@@ -104,7 +112,7 @@ pub fn parse_env_pairs(values: &[String]) -> Result<Vec<(String, String)>, RunEr
 /// exit code.
 pub fn execute(
     invocation: &Invocation,
-    args: &[String],
+    args: &[OsString],
     options: &RunOptions,
 ) -> Result<i32, RunError> {
     let mut command = invocation.build_command(args);
@@ -222,6 +230,14 @@ mod tests {
         assert!(matches!(
             parse_env_pairs(&["NO_EQUALS".into()]),
             Err(RunError::InvalidEnv(_))
+        ));
+    }
+
+    #[test]
+    fn parse_env_pairs_empty_key() {
+        assert!(matches!(
+            parse_env_pairs(&["=value".into()]),
+            Err(RunError::EmptyEnvKey(_))
         ));
     }
 }

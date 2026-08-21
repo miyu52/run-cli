@@ -239,6 +239,36 @@ fn run_with_cwd_and_env() {
 }
 
 #[test]
+fn run_with_cwd_and_relative_bin_dir() {
+    // A relative `--bin-dir` combined with `--cwd` must resolve the tool
+    // against the parent's working directory (regression: relative tool paths
+    // used to be resolved against the child's `--cwd`).
+    let dir = TempDir::new_in(std::env::current_dir().unwrap().join("target")).unwrap();
+    write_tool(dir.path(), CWD_ENV_TOOL, CWD_ENV_BODY);
+    let sub = dir.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let rel = dir
+        .path()
+        .strip_prefix(std::env::current_dir().unwrap())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let output = run_cli(&[
+        "--bin-dir",
+        &rel,
+        "run",
+        "--cwd",
+        sub.to_str().unwrap(),
+        CWD_ENV_TOOL,
+    ]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let out = stdout(&output);
+    assert!(out.contains("sub"), "stdout was: {out}");
+}
+
+#[test]
 fn run_missing_tool_exits_127_with_suggestion_and_list() {
     let toolbox = Toolbox::new();
     let output = run_cli_in_toolbox(&toolbox, &["run", "echoe"]);

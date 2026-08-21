@@ -212,6 +212,13 @@ impl Toolbox {
     ///   candidates, falling back to the bare file name; subdirectories work
     ///   too (`sub/tool`).
     pub fn locate(&self, name: &str) -> Result<PathBuf, ToolboxError> {
+        let candidate = self.find_candidate(name)?;
+        self.ensure_within(&candidate)
+    }
+
+    /// Find the candidate path for `name` (extension completion included)
+    /// without applying the containment check.
+    fn find_candidate(&self, name: &str) -> Result<PathBuf, ToolboxError> {
         let tool = Path::new(name);
         if tool.as_os_str().is_empty() {
             return Err(ToolboxError::EmptyToolName);
@@ -223,42 +230,38 @@ impl Toolbox {
             } else {
                 self.dir.join(tool)
             };
-            return self.check_existing(&candidate, name);
+            if !candidate.is_file() {
+                return Err(ToolboxError::ToolNotFound(
+                    self.dir.clone(),
+                    name.to_string(),
+                ));
+            }
+            return Ok(candidate);
         }
 
-        self.locate_bare(tool, name)
+        self.find_bare_candidate(tool, name)
     }
 
-    fn locate_bare(&self, relative: &Path, name: &str) -> Result<PathBuf, ToolboxError> {
+    fn find_bare_candidate(&self, relative: &Path, name: &str) -> Result<PathBuf, ToolboxError> {
         let parent = relative.parent().unwrap_or_else(|| Path::new(""));
         let file_name = relative.file_name().unwrap_or_default();
 
         for ext in TOOL_EXTENSIONS {
             let candidate = self.dir.join(parent).join(file_name).with_extension(ext);
             if candidate.is_file() {
-                return self.ensure_within(&candidate);
+                return Ok(candidate);
             }
         }
 
         let bare = self.dir.join(relative);
         if bare.is_file() {
-            return self.ensure_within(&bare);
+            return Ok(bare);
         }
 
         Err(ToolboxError::ToolNotFound(
             self.dir.clone(),
             name.to_string(),
         ))
-    }
-
-    fn check_existing(&self, candidate: &Path, name: &str) -> Result<PathBuf, ToolboxError> {
-        if !candidate.is_file() {
-            return Err(ToolboxError::ToolNotFound(
-                self.dir.clone(),
-                name.to_string(),
-            ));
-        }
-        self.ensure_within(candidate)
     }
 
     fn ensure_within(&self, candidate: &Path) -> Result<PathBuf, ToolboxError> {
@@ -325,39 +328,82 @@ impl Toolbox {
     ///
     /// Files are resolved like [`Toolbox::locate`] (extension completion
     /// included). Directories are matched by exact name and require
-    /// `recursive`. Paths may not escape the toolbox.
+    /// `recursive`. Paths may not escape the toolbox; a symlink entry whose
+    /// target resolves outside is still removed as an entry (only the link is
+    /// deleted, never its target).
     pub fn remove(&self, name: &str, recursive: bool) -> Result<PathBuf, ToolboxError> {
         match self.locate(name) {
             Ok(path) => {
                 fs::remove_file(&path).map_err(|e| ToolboxError::RemoveError(path.clone(), e))?;
-                Ok(path)
+                return Ok(path);
             }
-            Err(ToolboxError::ToolNotFound(..)) => {
-                let relative = Path::new(name);
-                if relative.is_absolute() {
-                    return Err(ToolboxError::ToolNotFound(
-                        self.dir.clone(),
-                        name.to_string(),
+            Err(ToolboxError::EscapeAttempted(..)) => {
+                // The entry exists inside the toolbox but its target resolves
+                // outside; removing the entry itself never touches the target,
+                // so delete the link. Paths not lexically inside the toolbox
+                // (e.g. absolute outside paths) are still rejected.
+                let candidate = self.find_candidate(name)?;
+                if !self.is_lexically_within(&candidate) {
+                    return Err(ToolboxError::EscapeAttempted(
+                        display_path(&candidate),
+                        display_path(&self.dir).into(),
                     ));
                 }
-                let candidate = self.dir.join(relative);
-                if candidate.is_dir() {
-                    self.ensure_within(&candidate)?;
-                    if !recursive {
-                        return Err(ToolboxError::RemoveDirectory(candidate.clone()));
-                    }
-                    fs::remove_dir_all(&candidate)
-                        .map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
-                    Ok(candidate)
-                } else {
-                    Err(ToolboxError::ToolNotFound(
-                        self.dir.clone(),
-                        name.to_string(),
-                    ))
-                }
+                fs::remove_file(&candidate)
+                    .map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
+                return Ok(candidate);
             }
-            Err(err) => Err(err),
+            Err(ToolboxError::ToolNotFound(..)) => {}
+            Err(err) => return Err(err),
         }
+
+        // Not a file: a directory (or directory symlink) by exact name.
+        let relative = Path::new(name);
+        if relative.is_absolute() {
+            return Err(ToolboxError::ToolNotFound(
+                self.dir.clone(),
+                name.to_string(),
+            ));
+        }
+        let candidate = self.dir.join(relative);
+        let meta = match fs::symlink_metadata(&candidate) {
+            Ok(meta) => meta,
+            Err(_) => {
+                return Err(ToolboxError::ToolNotFound(
+                    self.dir.clone(),
+                    name.to_string(),
+                ));
+            }
+        };
+        if meta.file_type().is_symlink() {
+            if !recursive {
+                return Err(ToolboxError::RemoveDirectory(candidate.clone()));
+            }
+            remove_link(&candidate).map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
+            Ok(candidate)
+        } else if meta.is_dir() {
+            self.ensure_within(&candidate)?;
+            if !recursive {
+                return Err(ToolboxError::RemoveDirectory(candidate.clone()));
+            }
+            fs::remove_dir_all(&candidate)
+                .map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
+            Ok(candidate)
+        } else {
+            Err(ToolboxError::ToolNotFound(
+                self.dir.clone(),
+                name.to_string(),
+            ))
+        }
+    }
+
+    /// Whether `candidate` is lexically inside the toolbox directory (no
+    /// parent traversal), without following symlinks.
+    fn is_lexically_within(&self, candidate: &Path) -> bool {
+        candidate.starts_with(&self.dir)
+            && !candidate
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
     }
 }
 
@@ -404,6 +450,23 @@ fn create_link(source: &Path, dest: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_dir(source, dest)
     } else {
         std::os::windows::fs::symlink_file(source, dest)
+    }
+}
+
+/// Remove a symlink entry without following it into its target.
+#[cfg(unix)]
+fn remove_link(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path)
+}
+
+#[cfg(windows)]
+fn remove_link(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            // Directory symlinks require remove_dir; fall back for files.
+            fs::remove_dir(path).or_else(|_| fs::remove_file(path))
+        }
+        _ => fs::remove_file(path),
     }
 }
 
@@ -773,6 +836,67 @@ mod tests {
             toolbox(&bin, false).remove("../tool.exe", false),
             Err(ToolboxError::EscapeAttempted(_, _))
         ));
+    }
+
+    #[cfg(unix)]
+    mod remove_symlinks {
+        use super::*;
+
+        #[test]
+        fn remove_file_symlink_to_outside_removes_link() {
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let outside = root.path().join("outside.exe");
+            std::fs::write(&outside, "").unwrap();
+            std::os::unix::fs::symlink(&outside, bin.join("link.exe")).unwrap();
+            let toolbox = toolbox(&bin, false);
+
+            let removed = toolbox.remove("link", false).unwrap();
+            assert_eq!(removed, bin.join("link.exe"));
+            assert!(!bin.join("link.exe").exists(), "link should be removed");
+            assert!(outside.exists(), "target must not be removed");
+        }
+
+        #[test]
+        fn remove_dir_symlink_to_outside_removes_link() {
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let outside = root.path().join("outside-dir");
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(outside.join("inner.txt"), "").unwrap();
+            std::os::unix::fs::symlink(&outside, bin.join("subdir")).unwrap();
+            let toolbox = toolbox(&bin, false);
+
+            assert!(matches!(
+                toolbox.remove("subdir", false),
+                Err(ToolboxError::RemoveDirectory(_))
+            ));
+
+            let removed = toolbox.remove("subdir", true).unwrap();
+            assert_eq!(removed, bin.join("subdir"));
+            assert!(!bin.join("subdir").exists(), "link should be removed");
+            assert!(
+                outside.join("inner.txt").exists(),
+                "target must not be removed"
+            );
+        }
+
+        #[test]
+        fn remove_absolute_outside_symlink_is_rejected() {
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let outside = root.path().join("outside.exe");
+            std::fs::write(&outside, "").unwrap();
+            std::os::unix::fs::symlink(&outside, bin.join("link.exe")).unwrap();
+
+            assert!(matches!(
+                toolbox(&bin, false).remove(&outside.to_string_lossy(), false),
+                Err(ToolboxError::EscapeAttempted(_, _))
+            ));
+        }
     }
 
     #[cfg(windows)]

@@ -16,15 +16,8 @@ pub struct Args {
 /// Resolve the tool and print its absolute path.
 pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
     let tool_path = locate_tool(&context.toolbox, &args.tool)?;
-    let absolute = std::path::absolute(&tool_path).map_err(|e| {
-        Error::formatted(
-            EXIT_ERROR,
-            format!(
-                "failed to resolve absolute path for {}: {e}",
-                tool_path.display()
-            ),
-        )
-    })?;
+    let absolute = std::path::absolute(&tool_path)
+        .map_err(|e| Error::formatted(EXIT_ERROR, messages::absolute_path_error(&tool_path, &e)))?;
     println!("{}", absolute.display());
     Ok(0)
 }

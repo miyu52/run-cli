@@ -85,3 +85,11 @@ pub fn added_copied(source: &Path, dest: &Path) -> String {
 pub fn removed(path: &Path) -> String {
     format!("removed {}", path.display())
 }
+
+/// Error message when a tool path cannot be made absolute.
+pub fn absolute_path_error(path: &Path, error: impl std::fmt::Display) -> String {
+    format!(
+        "failed to resolve absolute path for {}: {error}",
+        path.display()
+    )
+}
