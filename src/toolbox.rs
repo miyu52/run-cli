@@ -852,7 +852,7 @@ mod tests {
             std::os::unix::fs::symlink(&outside, bin.join("link.exe")).unwrap();
             let toolbox = toolbox(&bin, false);
 
-            let removed = toolbox.remove("link", false).unwrap();
+            let removed = toolbox.remove("link.exe", false).unwrap();
             assert_eq!(removed, bin.join("link.exe"));
             assert!(!bin.join("link.exe").exists(), "link should be removed");
             assert!(outside.exists(), "target must not be removed");
