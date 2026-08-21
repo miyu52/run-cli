@@ -35,15 +35,22 @@ impl Context {
     }
 }
 
+/// Map a toolbox error from a tool lookup to the unified error, turning a
+/// plain "not found" into the rich exit-127 message.
+pub fn map_tool_error(toolbox: &Toolbox, name: &str, err: ToolboxError) -> Error {
+    match err {
+        ToolboxError::ToolNotFound(..) => map_tool_not_found(toolbox, name),
+        err => err.into(),
+    }
+}
+
 /// Resolve a tool name like [`Toolbox::locate`], mapping "not found" to a
 /// rich error message with a spelling suggestion and the list of available
 /// tools.
 pub fn locate_tool(toolbox: &Toolbox, name: &str) -> Result<PathBuf, Error> {
-    match toolbox.locate(name) {
-        Ok(path) => Ok(path),
-        Err(ToolboxError::ToolNotFound(..)) => Err(map_tool_not_found(toolbox, name)),
-        Err(err) => Err(err.into()),
-    }
+    toolbox
+        .locate(name)
+        .map_err(|err| map_tool_error(toolbox, name, err))
 }
 
 /// Build the error for an unresolvable tool name: a missing toolbox
@@ -63,15 +70,16 @@ pub fn map_tool_not_found(toolbox: &Toolbox, name: &str) -> Error {
 
 /// Build the exit-127 error message for an unresolvable tool name.
 pub fn tool_not_found_error(toolbox: &Toolbox, name: &str) -> Error {
-    let available = toolbox.list_names().unwrap_or_default();
-    Error::RichToolNotFound {
-        message: messages::tool_not_found(
+    let message = match toolbox.list_names() {
+        Ok(available) => messages::tool_not_found(
             name,
             toolbox.dir(),
             &available,
             suggest::suggest(name, &available).as_deref(),
         ),
-    }
+        Err(_) => messages::tool_not_found_list_failed(name, toolbox.dir()),
+    };
+    Error::RichToolNotFound { message }
 }
 
 /// Resolve a tool name to an absolute path, like [`locate_tool`] followed by

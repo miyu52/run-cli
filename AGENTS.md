@@ -43,7 +43,7 @@ cargo fmt                      # 必须保持格式化一致
 - 退出码经 `ExitCode::from(code as u8)` 截断为 8 位，属平台限制，README 已文档化，不要"修复"。
 - 路径边界：所有操作都限定在工具箱目录内。`Toolbox::ensure_within` 按**解析后位置**判定（`canonicalize` 校验，外部/`..` 解析出去即报 `ToolboxError::ToolNotFound`，exit 127）；**符号链接条目按其自身位置判定**（`is_lexically_within`，不跟目标，链接在内即可用——`add` 正是这样把外部工具链接进工具箱）。不存在 `--allow-escape`。**不要用 `Path::canonicalize` 的结果直接展示给用户**——Windows 上会带 `\\?\` 前缀。
 - `run` 的透传规则（uv 风格，改参数定义时保持测试同步）：`--cwd`/`--env` 是 run-cli 自身选项，**必须放在工具名之前**；工具名（第一个非自有选项 token）之后的一切参数原样透传（含 `--`、含与 run-cli 选项重名的 flag）。工具名前出现 `--` 时其后第一个 token 视为工具名（转义 `-` 开头的名字）。实现：clap `external_subcommand`（`commands::run::ExternalCommand::Cmd(Vec<OsString>)`）——clap 遇到第一个非自有选项的 token 即把其后所有原始参数逐字节捕获，不再做任何选项解析；新增 run 自身选项只需加在 `Args` 上（工具名前被 clap 消费、工具名后自动透传），无需手动同步。对应测试：`cli.rs::run_*`、`tests/cli.rs::run_tool_*`。
-- `add`：优先 symlink（Windows 无权限时静默降级为复制，目录递归），返回 `(AddOutcome, PathBuf)`；名字必须是纯文件名（禁路径分隔符）。
+- `add`：优先 symlink（仅对权限/文件系统不支持类错误静默降级为复制——Windows 无开发者模式即 `ERROR_PRIVILEGE_NOT_HELD`；其他链接失败经 `ToolboxError::LinkError` 如实上报），目录递归复制，返回 `(AddOutcome, PathBuf)`；名字必须是纯文件名（禁路径分隔符）。
 - `remove`：文件经 `locate` 解析（含扩展名补全）；目录按精确名匹配且需 `--recursive`。指向工具箱外部的 symlink 条目删除的是**链接本身**（绝不动目标），见关键技术约束 7。
 
 ## 关键技术约束（踩过的坑，不要重犯）

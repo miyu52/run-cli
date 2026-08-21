@@ -106,6 +106,9 @@ pub enum ToolboxError {
     /// Copying a source into the toolbox failed.
     #[error("failed to copy {0} to {1}: {2}")]
     CopyError(PathBuf, PathBuf, #[source] std::io::Error),
+    /// Creating a symlink failed and could not be downgraded to a copy.
+    #[error("failed to link {0} to {1}: {2}")]
+    LinkError(PathBuf, PathBuf, #[source] std::io::Error),
     /// Removing an entry failed.
     #[error("failed to remove {0}: {1}")]
     RemoveError(PathBuf, #[source] std::io::Error),
@@ -310,13 +313,14 @@ impl Toolbox {
 
     /// Add a file or directory to the toolbox.
     ///
-    /// A symlink is created when possible; otherwise the source is copied
-    /// (directories recursively). The toolbox directory is created when
-    /// missing. `name` defaults to the source file name and must be a single
-    /// file name (no path separators). The source is absolutized first, so a
-    /// relative source never yields a dangling symlink (link targets resolve
-    /// relative to the link's own directory, the toolbox). Returns the outcome
-    /// and the destination path.
+    /// A symlink is created when possible; link failures caused by missing
+    /// privilege or a filesystem without link support are downgraded to a copy
+    /// (directories recursively), while other link errors are reported. The
+    /// toolbox directory is created when missing. `name` defaults to the source
+    /// file name and must be a single file name (no path separators). The source
+    /// is absolutized first, so a relative source never yields a dangling symlink
+    /// (link targets resolve relative to the link's own directory, the toolbox).
+    /// Returns the outcome and the destination path.
     pub fn add(
         &self,
         source: &Path,
@@ -349,9 +353,13 @@ impl Toolbox {
 
         match create_link(&source, &dest) {
             Ok(()) => Ok((AddOutcome::Linked, dest)),
-            Err(_) => copy_recursive(&source, &dest)
+            // Only downgrade to a copy for the expected cases (missing
+            // privilege, filesystem without link support); other link errors
+            // are reported instead of being masked as a copy.
+            Err(err) if should_downgrade_to_copy(&err) => copy_recursive(&source, &dest)
                 .map(|()| (AddOutcome::Copied, dest.clone()))
                 .map_err(|e| ToolboxError::CopyError(source, dest, e)),
+            Err(err) => Err(ToolboxError::LinkError(source, dest, err)),
         }
     }
 
@@ -450,6 +458,26 @@ impl Toolbox {
 
 fn validate_name(name: &str) -> Result<(), ToolboxError> {
     fsutil::validate_name(name)
+}
+
+/// Whether a failed symlink creation should be silently downgraded to a copy
+/// instead of surfacing as a hard error: the expected cases are missing
+/// privilege and filesystems that cannot represent links.
+fn should_downgrade_to_copy(err: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_PRIVILEGE_NOT_HELD (no developer mode / elevation) and
+        // ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED (filesystem without
+        // symlink support, e.g. FAT).
+        matches!(err.raw_os_error(), Some(1 | 50 | 1314))
+    }
+    #[cfg(not(windows))]
+    {
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+        )
+    }
 }
 
 fn create_link(source: &Path, dest: &Path) -> std::io::Result<()> {

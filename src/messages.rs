@@ -102,6 +102,15 @@ pub fn tool_not_found(
     message
 }
 
+/// Error message for an unresolvable tool name when the toolbox could not be
+/// listed (suggestions and the available-tools list are unavailable).
+pub fn tool_not_found_list_failed(tool: &str, dir: &Path) -> String {
+    format!(
+        "tool '{tool}' not found in {} (could not list available tools)",
+        dir.display()
+    )
+}
+
 /// Confirmation printed after `add` created a symlink.
 pub fn added_linked(source: &Path, dest: &Path) -> String {
     format!("linked {} -> {}", source.display(), dest.display())

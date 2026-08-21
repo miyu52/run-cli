@@ -16,6 +16,9 @@
 //! 1 runtime error, 2 usage error (clap), 127 tool not found.
 
 #![warn(missing_docs)]
+// Tests need `std::env::set_var` (unsafe in edition 2024); library code is
+// pure safe Rust.
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 pub mod cli;
 pub mod commands;
