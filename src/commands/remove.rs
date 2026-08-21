@@ -17,7 +17,7 @@ pub struct Args {
 }
 
 /// Remove the tool from the toolbox.
-pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
+pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let path = match context.toolbox.remove(&args.tool, args.recursive) {
         Ok(path) => path,
         Err(ToolboxError::ToolNotFound(..)) => {

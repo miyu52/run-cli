@@ -3,11 +3,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::EXIT_ERROR;
 use crate::commands::{Context, resolve_absolute};
 use crate::error::Error;
 use crate::messages;
-use crate::runner::{self, Invocation, RunOptions};
+use crate::runner::{self, Invocation, RunError, RunOptions};
 
 /// The tool to run and its arguments, captured verbatim by clap.
 ///
@@ -46,9 +45,7 @@ pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let (tool, passthrough) = command
         .split_first()
         .expect("required external command always carries a tool name");
-    let tool = tool
-        .to_str()
-        .ok_or_else(|| Error::formatted(EXIT_ERROR, messages::tool_name_not_utf8()))?;
+    let tool = tool.to_str().ok_or(RunError::ToolNameNotUtf8)?;
     // Absolutize before spawning so that a relative tool path (e.g. from a
     // relative toolbox directory) is not resolved against the child's `--cwd`.
     let absolute = resolve_absolute(&context.toolbox, tool)?;

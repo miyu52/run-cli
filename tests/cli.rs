@@ -159,6 +159,15 @@ fn list_empty_toolbox() {
 }
 
 #[test]
+fn list_json_empty_toolbox_is_empty_array() {
+    let dir = TempDir::new().unwrap();
+    let output = run_cli(&["--bin-dir", dir.path().to_str().unwrap(), "list", "--json"]);
+    assert!(output.status.success());
+    let parsed: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(parsed, serde_json::json!([]));
+}
+
+#[test]
 fn list_missing_bin_dir_fails() {
     let missing = PathBuf::from("definitely-missing-dir");
     let output = run_cli(&["--bin-dir", missing.to_str().unwrap(), "list"]);

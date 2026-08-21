@@ -46,8 +46,7 @@ pub struct Cli {
 /// The run-cli subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run a tool from the toolbox; arguments after the tool name are passed
-    /// through. `--help` / `-h` after the tool name are passed through too.
+    /// Run a tool; arguments after the tool name are passed through.
     #[command(
         about = messages::CMD_RUN_ABOUT,
         disable_help_flag = true,
@@ -55,10 +54,10 @@ pub enum Command {
         help_expected = true
     )]
     Run(commands::run::Args),
-    /// List the contents of the toolbox directory.
+    /// List the toolbox contents.
     #[command(about = messages::CMD_LIST_ABOUT)]
     List(commands::list::Args),
-    /// Print the absolute path a tool name resolves to, without running it.
+    /// Resolve a tool name to an absolute path, without running it.
     #[command(about = messages::CMD_WHICH_ABOUT)]
     Which(commands::which::Args),
     /// Add a file or directory to the toolbox.
@@ -81,11 +80,11 @@ pub fn run() -> Result<i32, Error> {
     let context = Context::new(cli.bin_dir.as_deref(), cli.allow_escape);
     match cli.command {
         Command::Run(args) => commands::run::execute(args, &context),
-        Command::List(args) => commands::list::run(args, &context),
-        Command::Which(args) => commands::which::run(args, &context),
-        Command::Add(args) => commands::add::run(args, &context),
-        Command::Remove(args) => commands::remove::run(args, &context),
-        Command::Completions(args) => commands::completions::run(args),
+        Command::List(args) => commands::list::execute(args, &context),
+        Command::Which(args) => commands::which::execute(args, &context),
+        Command::Add(args) => commands::add::execute(args, &context),
+        Command::Remove(args) => commands::remove::execute(args, &context),
+        Command::Completions(args) => commands::completions::execute(args),
     }
 }
 

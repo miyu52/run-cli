@@ -15,7 +15,7 @@ pub struct Args {
 }
 
 /// Print the completion script for the requested shell to stdout.
-pub fn run(args: Args) -> Result<i32, Error> {
+pub fn execute(args: Args) -> Result<i32, Error> {
     let mut command = crate::cli::Cli::command();
     clap_complete::generate(args.shell, &mut command, "run-cli", &mut std::io::stdout());
     Ok(0)

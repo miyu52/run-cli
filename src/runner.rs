@@ -83,6 +83,9 @@ pub enum RunError {
     /// The requested working directory does not exist or is not a directory.
     #[error("working directory not found: {0}")]
     MissingCwd(PathBuf),
+    /// The tool name is not valid UTF-8.
+    #[error("tool name is not valid UTF-8")]
+    ToolNameNotUtf8,
 }
 
 /// Options controlling how a tool is executed.

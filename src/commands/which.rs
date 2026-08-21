@@ -13,7 +13,7 @@ pub struct Args {
 }
 
 /// Resolve the tool and print its absolute path.
-pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
+pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let absolute = resolve_absolute(&context.toolbox, &args.tool)?;
     println!("{}", absolute.display());
     Ok(0)

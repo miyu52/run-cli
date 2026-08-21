@@ -321,7 +321,10 @@ impl Toolbox {
         validate_name(&name)?;
 
         let dest = self.dir.join(&name);
-        if dest.exists() {
+        // `exists()` follows symlinks and returns false for broken links, so a
+        // dangling entry with this name would slip past the check and surface
+        // as a confusing copy error; `symlink_metadata` sees the entry itself.
+        if fs::symlink_metadata(&dest).is_ok() {
             return Err(ToolboxError::AlreadyExists(dest));
         }
         fs::create_dir_all(&self.dir)

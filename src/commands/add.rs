@@ -20,7 +20,7 @@ pub struct Args {
 
 /// Add the source to the toolbox, creating a symlink when possible and
 /// falling back to a copy.
-pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
+pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let (outcome, dest) = context.toolbox.add(&args.path, args.name.as_deref())?;
     match outcome {
         AddOutcome::Linked => println!("{}", messages::added_linked(&args.path, &dest)),

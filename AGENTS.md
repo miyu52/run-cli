@@ -37,7 +37,7 @@ cargo fmt                      # 必须保持格式化一致
 设计约定：
 
 - 纯逻辑模块必须可直接单测；新增逻辑优先拆到纯模块并补单元测试。
-- 每个子命令对应 `src/commands/` 下的一个模块（`Args` 参数结构 + 入口函数 `run`/`execute(args, &Context) -> Result<i32, Error>`，返回透传的退出码）；新增命令时在 `src/commands/` 加模块、`cli.rs` 的 `Command` 枚举加变体 + 分发 + 解析单测 + `tests/cli.rs` 集成测试。
+- 每个子命令对应 `src/commands/` 下的一个模块（`Args` 参数结构 + 入口函数 `execute(args, &Context) -> Result<i32, Error>`，返回透传的退出码）；新增命令时在 `src/commands/` 加模块、`cli.rs` 的 `Command` 枚举加变体 + 分发 + 解析单测 + `tests/cli.rs` 集成测试。
 - **用户可见文本**分两类，规则如下：① clap 帮助与命令输出格式**必须**定义在 `src/messages.rs`，调用点只引用它（帮助文本用 `const` 常量、运行时消息用 `pub fn`）；② 错误 Display 文本由 thiserror 属性**集中定义在** `error.rs`/`toolbox.rs`/`runner.rs` 的枚举变体上，禁止在命令模块内联 `format!` 构造面向用户的错误字符串（如确实需要运行时格式化的错误消息，放入 `messages.rs`）。禁止在其他文件出现面向用户的裸字符串。`messages.rs` 声明了 `#![allow(missing_docs)]`，其余模块受 `lib.rs` 的 `#![warn(missing_docs)]` 约束（零警告为准）。
 - 错误处理：统一 `Error` 枚举（`error.rs`）。退出码约定：0 成功 / 1 运行出错 / 2 用法错误（clap 自动）/ 127 工具未找到（`EXIT_TOOL_NOT_FOUND`）。"未找到"的富错误消息（含拼写建议与可用工具列表）通过 `commands::tool_not_found_error` 构造为 `Error::RichToolNotFound`（与领域错误 `ToolboxError::ToolNotFound` 区分，二者退出码都是 127），避免在多个命令中重复。
 - 退出码经 `ExitCode::from(code as u8)` 截断为 8 位，属平台限制，README 已文档化，不要"修复"。

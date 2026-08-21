@@ -15,7 +15,7 @@ pub struct Args {
 
 /// List the contents of the toolbox directory (files and directories,
 /// sorted). With `--json`, prints a JSON array of entries instead.
-pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
+pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let tools = context.toolbox.list()?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&tools)?);

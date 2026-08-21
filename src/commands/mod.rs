@@ -14,7 +14,6 @@ pub mod which;
 
 use std::path::{Path, PathBuf};
 
-use crate::EXIT_ERROR;
 use crate::error::Error;
 use crate::messages;
 use crate::suggest;
@@ -75,5 +74,5 @@ pub fn tool_not_found_error(toolbox: &Toolbox, name: &str) -> Error {
 pub fn resolve_absolute(toolbox: &Toolbox, name: &str) -> Result<PathBuf, Error> {
     let tool_path = locate_tool(toolbox, name)?;
     std::path::absolute(&tool_path)
-        .map_err(|e| Error::formatted(EXIT_ERROR, messages::absolute_path_error(&tool_path, &e)))
+        .map_err(|e| ToolboxError::AbsolutePathError(tool_path, e).into())
 }
