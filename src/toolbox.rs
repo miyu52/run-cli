@@ -171,9 +171,12 @@ impl Toolbox {
         let mut tools: Vec<Tool> = entries
             .filter_map(Result::ok)
             .filter_map(|entry| {
-                let metadata = entry.metadata().ok()?;
-                let name = entry.file_name().to_string_lossy().into_owned();
+                // fs::metadata follows symlinks (stat semantics), so tools
+                // added as links still show up; DirEntry::metadata() does not
+                // follow symlinks on Unix (lstat semantics).
                 let path = entry.path();
+                let metadata = fs::metadata(&path).ok()?;
+                let name = entry.file_name().to_string_lossy().into_owned();
                 if metadata.is_file() {
                     Some(Tool {
                         name,

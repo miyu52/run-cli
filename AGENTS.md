@@ -50,7 +50,7 @@ cargo fmt                      # 必须保持格式化一致
 
 1. **clap `trailing_var_arg` 只对"未声明的参数"透传**：声明过的选项（如 `--cwd`/`--env`）即使在位置参数之后仍会被 clap 消费，所以 `run` 的 uv 风格透传靠 `cli.rs::split_run_args` 预分割实现，透传段完全不经过 clap；不要在 RunArgs 的 `tool` 上加 `allow_hyphen_values`（会把工具名前的未知选项吞成工具名）。
 2. **`use clap::Args;` 与 `pub struct Args` 同名冲突**：命令模块的 Args 结构用全限定 `#[derive(Debug, clap::Args)]`，不要 `use clap::Args`。
-3. **`DirEntry::file_type()` 不跟随符号链接**：`Toolbox::list` 必须用 `entry.metadata()`，否则 `add` 创建的符号链接工具不会出现在 `list` 里。
+3. **`DirEntry::file_type()` 与 `DirEntry::metadata()` 不跟随符号链接（Unix 上为 lstat 语义）**：`Toolbox::list` 必须用 `fs::metadata(entry.path())`（stat 语义，双平台跟随），否则 `add` 创建的符号链接工具不会出现在 `list` 里（Windows 上 `DirEntry::metadata()` 跟随链接、Unix 上不跟随，行为不一致，只测 Windows 测不出来）。
 4. **`Path::join` 遇绝对路径会整体替换**：`dir.join("C:\\x")` 得到 `C:\x`，remove/add 等操作必须校验绝对路径或依赖 `ensure_within` 兜底。
 5. **Windows 上 `is_file()` 大小写不敏感**（NTFS），`with_extension` 探测顺序即优先级；Unix 精确匹配，`TOOL_EXTENSIONS` 为空。
 6. **Windows 符号链接需要开发者模式/管理员权限**：集成测试与 CI 上 `add` 可能降级为复制，测试断言必须兼容两种结果（`linked` 或 `copied`）。

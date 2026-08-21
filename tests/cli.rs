@@ -8,12 +8,12 @@ use tempfile::TempDir;
 #[cfg(windows)]
 const ECHO_TOOL: &str = "echo.bat";
 #[cfg(not(windows))]
-const ECHO_TOOL: &str = "echo.sh";
+const ECHO_TOOL: &str = "echo";
 
 #[cfg(windows)]
 const EXIT_TOOL: &str = "exit42.bat";
 #[cfg(not(windows))]
-const EXIT_TOOL: &str = "exit42.sh";
+const EXIT_TOOL: &str = "exit42";
 
 #[cfg(windows)]
 const ECHO_BODY: &str = "@echo off\necho %*";
@@ -321,9 +321,11 @@ fn run_escaping_path_is_rejected_by_default() {
 #[test]
 fn run_escaping_path_allowed_with_flag() {
     let toolbox = Toolbox::new();
+    // Distinct file name from the rejection test: both write into the shared
+    // parent of their temp dirs and run in parallel.
     write_tool(
         toolbox.dir.path().parent().unwrap(),
-        "outside.bat",
+        "escape-allowed.bat",
         OUTSIDE_BODY,
     );
     let output = run_cli(&[
@@ -331,10 +333,15 @@ fn run_escaping_path_allowed_with_flag() {
         toolbox.path().to_str().unwrap(),
         "--allow-escape",
         "run",
-        "../outside.bat",
+        "../escape-allowed.bat",
         "hi",
     ]);
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stderr: {}; stdout: {}",
+        stderr(&output),
+        stdout(&output)
+    );
     assert!(stdout(&output).contains("hi"));
 }
 
@@ -366,8 +373,13 @@ fn which_missing_tool_exits_127() {
 #[test]
 fn add_then_run_tool() {
     let toolbox = Toolbox::new();
-    let source = toolbox.path().parent().unwrap().join("new-tool.bat");
-    std::fs::write(&source, "@echo off\necho added").unwrap();
+    // write_tool makes the source executable on Unix (shebang + 0o755);
+    // fs::write alone would leave it unexecutable.
+    let source = write_tool(
+        toolbox.path().parent().unwrap(),
+        "new-tool.bat",
+        "@echo off\necho added",
+    );
 
     let output = run_cli(&[
         "--bin-dir",
