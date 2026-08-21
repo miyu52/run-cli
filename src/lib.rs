@@ -6,8 +6,11 @@
 //! extension completion on Windows) and executes it, passing every argument
 //! after the tool name through untouched.
 //!
-//! By default tool paths may not resolve outside the toolbox directory;
-//! `--allow-escape` lifts that restriction.
+//! Tool paths must stay inside the toolbox directory: absolute paths and
+//! `..` are judged by where they resolve, and anything pointing outside the
+//! toolbox is rejected as not found. Symlink entries are judged by the link
+//! itself, so a link inside the toolbox may point anywhere (the `add`
+//! workflow links external tools into the toolbox).
 //!
 //! Exit codes: 0 success (the `run` command propagates the tool's exit code),
 //! 1 runtime error, 2 usage error (clap), 127 tool not found.

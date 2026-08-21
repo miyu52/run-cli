@@ -69,7 +69,7 @@ mod tests {
             env: Vec::new(),
             command: ExternalCommand::Cmd(Vec::new()),
         };
-        let context = Context::new(None, false);
+        let context = Context::new(None);
         assert!(matches!(
             execute(args, &context),
             Err(Error::Run(RunError::MissingToolName))

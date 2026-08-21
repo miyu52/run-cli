@@ -6,10 +6,12 @@
 //! -> `.cmd` -> `.ps1`, case-insensitive), including subdirectories. Absolute
 //! paths are accepted as-is.
 //!
-//! Unless escape is allowed ([`Toolbox::resolve`] `allow_escape`), resolved
-//! paths must stay inside the toolbox directory; paths that resolve outside
-//! it (e.g. `..` components or absolute paths) are rejected with
-//! [`ToolboxError::EscapeAttempted`].
+//! Tool paths must resolve inside the toolbox directory: absolute paths and
+//! `..` components are judged by where they resolve to, and paths that point
+//! outside the toolbox are rejected as not found. Symlink entries are judged
+//! by the link itself, not by its target: a link inside the toolbox is a
+//! toolbox tool even when it points outside (the `add` workflow links
+//! external tools into the toolbox).
 
 use std::env;
 use std::fs;
@@ -89,11 +91,6 @@ pub enum ToolboxError {
     /// An empty tool name was given.
     #[error("tool name must not be empty")]
     EmptyToolName,
-    /// The resolved path lies outside the toolbox directory.
-    #[error(
-        "path '{0}' resolves outside the toolbox directory {1}; use --allow-escape to permit it"
-    )]
-    EscapeAttempted(String, PathBuf),
     /// An `add` name contains path separators or is otherwise invalid.
     #[error("invalid tool name '{0}': must be a single file name")]
     InvalidToolName(String),
@@ -117,11 +114,10 @@ pub enum ToolboxError {
     RemoveDirectory(PathBuf),
 }
 
-/// A toolbox directory with its path-boundary policy.
+/// A toolbox directory.
 #[derive(Debug, Clone)]
 pub struct Toolbox {
     dir: PathBuf,
-    allow_escape: bool,
     /// Canonicalized toolbox directory, cached so containment checks do not
     /// re-canonicalize the (unchanging) base directory on every lookup.
     canonical_dir: OnceLock<PathBuf>,
@@ -144,12 +140,11 @@ pub fn resolve_bin_dir(cli_bin_dir: Option<&Path>) -> PathBuf {
 impl Toolbox {
     /// Resolve the toolbox directory and build a [`Toolbox`] around it.
     ///
-    /// When `allow_escape` is true, resolved tool paths may point outside the
-    /// toolbox directory; otherwise they must stay within it.
-    pub fn resolve(cli_bin_dir: Option<&Path>, allow_escape: bool) -> Self {
+    /// Resolved tool paths must stay inside the toolbox directory; symlink
+    /// entries are judged by the link itself, not by their target.
+    pub fn resolve(cli_bin_dir: Option<&Path>) -> Self {
         Toolbox {
             dir: resolve_bin_dir(cli_bin_dir),
-            allow_escape,
             canonical_dir: OnceLock::new(),
         }
     }
@@ -157,11 +152,6 @@ impl Toolbox {
     /// The toolbox directory.
     pub fn dir(&self) -> &Path {
         &self.dir
-    }
-
-    /// Whether tool paths may resolve outside the toolbox directory.
-    pub fn allow_escape(&self) -> bool {
-        self.allow_escape
     }
 
     /// List the contents of the toolbox directory (files and directories,
@@ -273,9 +263,22 @@ impl Toolbox {
         ))
     }
 
+    /// Reject paths that resolve outside the toolbox directory.
+    ///
+    /// Symlink entries are judged by the link itself, not by the link's
+    /// target: a link inside the toolbox passes even when it points outside
+    /// (the `add` workflow links external tools into the toolbox). Other
+    /// paths are canonicalized and must resolve inside the toolbox (so `..`
+    /// that lands back inside is fine, while absolute paths or `..` pointing
+    /// outside are rejected as not found).
     fn ensure_within(&self, candidate: &Path) -> Result<PathBuf, ToolboxError> {
-        if self.allow_escape {
-            return Ok(candidate.to_path_buf());
+        let not_found =
+            || ToolboxError::ToolNotFound(self.dir.clone(), candidate.display().to_string());
+        if fs::symlink_metadata(candidate).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            if self.is_lexically_within(candidate) {
+                return Ok(candidate.to_path_buf());
+            }
+            return Err(not_found());
         }
         let base = match self.canonical_dir.get() {
             Some(base) => base.clone(),
@@ -295,10 +298,7 @@ impl Toolbox {
         if canonical.starts_with(&base) {
             Ok(candidate.to_path_buf())
         } else {
-            Err(ToolboxError::EscapeAttempted(
-                display_path(&canonical),
-                display_path(&base).into(),
-            ))
+            Err(not_found())
         }
     }
 
@@ -353,8 +353,8 @@ impl Toolbox {
     ///
     /// Files are resolved like [`Toolbox::locate`] (extension completion
     /// included). Directories are matched by exact name and require
-    /// `recursive`. Paths may not escape the toolbox; a symlink entry whose
-    /// target resolves outside is still removed as an entry (only the link is
+    /// `recursive`. Paths must stay inside the toolbox; a symlink entry whose
+    /// target points outside is still removed as an entry (only the link is
     /// deleted, never its target).
     pub fn remove(&self, name: &str, recursive: bool) -> Result<PathBuf, ToolboxError> {
         if let Some(path) = self.remove_file_entry(name)? {
@@ -371,22 +371,6 @@ impl Toolbox {
             Ok(path) => {
                 fs::remove_file(&path).map_err(|e| ToolboxError::RemoveError(path.clone(), e))?;
                 Ok(Some(path))
-            }
-            Err(ToolboxError::EscapeAttempted(..)) => {
-                // The entry exists inside the toolbox but its target resolves
-                // outside; removing the entry itself never touches the target,
-                // so delete the link. Paths not lexically inside the toolbox
-                // (e.g. absolute outside paths) are still rejected.
-                let candidate = self.find_candidate(name)?;
-                if !self.is_lexically_within(&candidate) {
-                    return Err(ToolboxError::EscapeAttempted(
-                        display_path(&candidate),
-                        display_path(&self.dir).into(),
-                    ));
-                }
-                fs::remove_file(&candidate)
-                    .map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
-                Ok(Some(candidate))
             }
             Err(ToolboxError::ToolNotFound(..)) => Ok(None),
             Err(err) => Err(err),
@@ -448,12 +432,6 @@ impl Toolbox {
     }
 }
 
-/// Display form of a canonicalized path; on Windows strips the `\\?\`
-/// extended-length prefix `fs::canonicalize` produces.
-fn display_path(path: &Path) -> String {
-    fsutil::display_path(path)
-}
-
 fn validate_name(name: &str) -> Result<(), ToolboxError> {
     fsutil::validate_name(name)
 }
@@ -477,22 +455,6 @@ mod fsutil {
     use std::path::{Component, Path};
 
     use super::ToolboxError;
-
-    /// Display form of a canonicalized path; on Windows strips the `\\?\`
-    /// extended-length prefix `fs::canonicalize` produces.
-    pub(super) fn display_path(path: &Path) -> String {
-        #[cfg(windows)]
-        {
-            let text = path.to_string_lossy();
-            text.strip_prefix(r"\\?\")
-                .map(|stripped| stripped.to_string())
-                .unwrap_or_else(|| text.into_owned())
-        }
-        #[cfg(not(windows))]
-        {
-            path.to_string_lossy().into_owned()
-        }
-    }
 
     pub(super) fn validate_name(name: &str) -> Result<(), ToolboxError> {
         let path = Path::new(name);
@@ -587,8 +549,8 @@ mod tests {
         dir
     }
 
-    fn toolbox(dir: &Path, allow_escape: bool) -> Toolbox {
-        Toolbox::resolve(Some(dir), allow_escape)
+    fn toolbox(dir: &Path) -> Toolbox {
+        Toolbox::resolve(Some(dir))
     }
 
     #[test]
@@ -626,7 +588,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("subdir")).unwrap();
         std::fs::write(dir.path().join("subdir").join("nested.exe"), "").unwrap();
 
-        let tools = toolbox(dir.path(), false).list().unwrap();
+        let tools = toolbox(dir.path()).list().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["a.exe", "b.txt", "subdir", "z.bat"]);
         assert_eq!(tools[0].kind, ToolKind::File);
@@ -639,7 +601,7 @@ mod tests {
     fn list_returns_names() {
         let dir = temp_dir_with_tools(&["b.exe", "a.exe"]);
         assert_eq!(
-            toolbox(dir.path(), false).list_names().unwrap(),
+            toolbox(dir.path()).list_names().unwrap(),
             ["a.exe", "b.exe"]
         );
     }
@@ -647,13 +609,13 @@ mod tests {
     #[test]
     fn list_empty_dir() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert!(toolbox(dir.path(), false).list().unwrap().is_empty());
+        assert!(toolbox(dir.path()).list().unwrap().is_empty());
     }
 
     #[test]
     fn list_returns_absolute_paths() {
         let dir = temp_dir_with_tools(&["a.exe"]);
-        let tools = toolbox(dir.path(), false).list().unwrap();
+        let tools = toolbox(dir.path()).list().unwrap();
         assert!(tools[0].path.is_absolute());
         assert_eq!(tools[0].path, dir.path().join("a.exe"));
     }
@@ -662,7 +624,7 @@ mod tests {
     fn list_missing_dir() {
         let missing = PathBuf::from("does-not-exist");
         assert!(matches!(
-            toolbox(&missing, false).list(),
+            toolbox(&missing).list(),
             Err(ToolboxError::MissingDirectory(_))
         ));
     }
@@ -672,7 +634,7 @@ mod tests {
         let file = temp_dir_with_tools(&["file.txt"]);
         let path = file.path().join("file.txt");
         assert!(matches!(
-            toolbox(&path, false).list(),
+            toolbox(&path).list(),
             Err(ToolboxError::NotADirectory(_))
         ));
     }
@@ -681,7 +643,7 @@ mod tests {
     fn locate_empty_name() {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(matches!(
-            toolbox(dir.path(), false).locate(""),
+            toolbox(dir.path()).locate(""),
             Err(ToolboxError::EmptyToolName)
         ));
     }
@@ -690,7 +652,7 @@ mod tests {
     fn locate_missing() {
         let dir = temp_dir_with_tools(&["other.exe"]);
         assert!(matches!(
-            toolbox(dir.path(), false).locate("nope"),
+            toolbox(dir.path()).locate("nope"),
             Err(ToolboxError::ToolNotFound(_, _))
         ));
     }
@@ -698,7 +660,7 @@ mod tests {
     #[test]
     fn locate_explicit_extension() {
         let dir = temp_dir_with_tools(&["example.bat", "example.exe"]);
-        let resolved = toolbox(dir.path(), false).locate("example.bat").unwrap();
+        let resolved = toolbox(dir.path()).locate("example.bat").unwrap();
         assert_eq!(resolved, dir.path().join("example.bat"));
     }
 
@@ -706,16 +668,14 @@ mod tests {
     fn locate_absolute_path() {
         let dir = temp_dir_with_tools(&["abs.exe"]);
         let abs = dir.path().join("abs.exe");
-        let resolved = toolbox(dir.path(), false)
-            .locate(&abs.to_string_lossy())
-            .unwrap();
+        let resolved = toolbox(dir.path()).locate(&abs.to_string_lossy()).unwrap();
         assert_eq!(resolved, abs);
     }
 
     #[test]
     fn locate_subdirectory() {
         let dir = temp_dir_with_tools(&["sub/tool.exe"]);
-        let resolved = toolbox(dir.path(), false).locate("sub/tool.exe").unwrap();
+        let resolved = toolbox(dir.path()).locate("sub/tool.exe").unwrap();
         assert_eq!(resolved, dir.path().join("sub/tool.exe"));
     }
 
@@ -724,25 +684,25 @@ mod tests {
     #[test]
     fn locate_relative_path_inside_bin() {
         let dir = temp_dir_with_tools(&["sub/tool.exe"]);
-        let resolved = toolbox(dir.path(), false).locate("sub/tool").unwrap();
+        let resolved = toolbox(dir.path()).locate("sub/tool").unwrap();
         assert_eq!(resolved, dir.path().join("sub/tool.exe"));
     }
 
     #[test]
-    fn locate_parent_dir_traversal_is_rejected() {
+    fn locate_parent_dir_landing_outside_is_not_found() {
         let root = tempfile::TempDir::new().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(root.path().join("tool.exe"), "").unwrap();
 
         assert!(matches!(
-            toolbox(&bin, false).locate("../tool.exe"),
-            Err(ToolboxError::EscapeAttempted(_, _))
+            toolbox(&bin).locate("../tool.exe"),
+            Err(ToolboxError::ToolNotFound(_, _))
         ));
     }
 
     #[test]
-    fn locate_absolute_path_outside_is_rejected() {
+    fn locate_absolute_path_outside_is_not_found() {
         let root = tempfile::TempDir::new().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
@@ -750,34 +710,30 @@ mod tests {
         std::fs::write(&outside, "").unwrap();
 
         assert!(matches!(
-            toolbox(&bin, false).locate(&outside.to_string_lossy()),
-            Err(ToolboxError::EscapeAttempted(_, _))
+            toolbox(&bin).locate(&outside.to_string_lossy()),
+            Err(ToolboxError::ToolNotFound(_, _))
         ));
     }
 
     #[test]
-    fn locate_escape_allowed_with_flag() {
+    fn locate_parent_dir_landing_inside_is_allowed() {
+        // The containment check follows the resolved path: `..` that lands
+        // back inside the toolbox is not an escape.
         let root = tempfile::TempDir::new().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
-        let outside = root.path().join("outside.exe");
-        std::fs::write(&outside, "").unwrap();
+        std::fs::write(bin.join("tool.exe"), "").unwrap();
 
-        let resolved = toolbox(&bin, true)
-            .locate(&outside.to_string_lossy())
-            .unwrap();
-        assert_eq!(resolved, outside);
+        let resolved = toolbox(&bin).locate("../bin/tool.exe").unwrap();
+        assert!(resolved.is_file(), "resolved: {resolved:?}");
     }
 
     #[test]
-    fn locate_parent_dir_traversal_allowed_with_flag() {
-        let root = tempfile::TempDir::new().unwrap();
-        let bin = root.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        std::fs::write(root.path().join("tool.exe"), "").unwrap();
-
-        let resolved = toolbox(&bin, true).locate("../tool.exe").unwrap();
-        assert!(resolved.is_file());
+    fn locate_absolute_path_inside_is_allowed() {
+        let dir = temp_dir_with_tools(&["tool.exe"]);
+        let abs = dir.path().join("tool.exe");
+        let resolved = toolbox(dir.path()).locate(&abs.to_string_lossy()).unwrap();
+        assert_eq!(resolved, abs);
     }
 
     #[test]
@@ -786,7 +742,7 @@ mod tests {
         let bin = root.path().join("bin");
         std::fs::write(root.path().join("tool.exe"), "").unwrap();
 
-        let (outcome, dest) = toolbox(&bin, false)
+        let (outcome, dest) = toolbox(&bin)
             .add(&root.path().join("tool.exe"), None)
             .unwrap();
         assert!(matches!(outcome, AddOutcome::Linked | AddOutcome::Copied));
@@ -800,7 +756,7 @@ mod tests {
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(root.path().join("source.exe"), "").unwrap();
-        let toolbox = toolbox(&bin, false);
+        let toolbox = toolbox(&bin);
 
         toolbox
             .add(&root.path().join("source.exe"), Some("renamed.exe"))
@@ -814,7 +770,7 @@ mod tests {
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         assert!(matches!(
-            toolbox(&bin, false).add(&root.path().join("nope"), None),
+            toolbox(&bin).add(&root.path().join("nope"), None),
             Err(ToolboxError::AddSourceMissing(_))
         ));
     }
@@ -825,7 +781,7 @@ mod tests {
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(root.path().join("tool.exe"), "").unwrap();
-        let toolbox = toolbox(&bin, false);
+        let toolbox = toolbox(&bin);
 
         assert!(matches!(
             toolbox.add(&root.path().join("tool.exe"), Some("a/b.exe")),
@@ -844,7 +800,7 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(root.path().join("tool.exe"), "").unwrap();
         std::fs::write(root.path().join("other.exe"), "").unwrap();
-        let toolbox = toolbox(&bin, false);
+        let toolbox = toolbox(&bin);
 
         toolbox.add(&root.path().join("tool.exe"), None).unwrap();
         assert!(matches!(
@@ -861,7 +817,7 @@ mod tests {
         let source = root.path().join("scripts");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(source.join("inner.exe"), "").unwrap();
-        let toolbox = toolbox(&bin, false);
+        let toolbox = toolbox(&bin);
 
         let (outcome, dest) = toolbox.add(&source, Some("scripts")).unwrap();
         assert!(matches!(outcome, AddOutcome::Linked | AddOutcome::Copied));
@@ -877,7 +833,7 @@ mod tests {
     #[test]
     fn remove_file() {
         let dir = temp_dir_with_tools(&["tool.exe", "other.bat"]);
-        let toolbox = toolbox(dir.path(), false);
+        let toolbox = toolbox(dir.path());
 
         let removed = toolbox.remove("tool", false).unwrap();
         assert_eq!(removed, dir.path().join("tool.exe"));
@@ -889,7 +845,7 @@ mod tests {
     fn remove_missing() {
         let dir = temp_dir_with_tools(&["tool.exe"]);
         assert!(matches!(
-            toolbox(dir.path(), false).remove("nope", false),
+            toolbox(dir.path()).remove("nope", false),
             Err(ToolboxError::ToolNotFound(_, _))
         ));
     }
@@ -899,7 +855,7 @@ mod tests {
         let dir = temp_dir_with_tools(&[]);
         std::fs::create_dir(dir.path().join("subdir")).unwrap();
         std::fs::write(dir.path().join("subdir").join("t.exe"), "").unwrap();
-        let toolbox = toolbox(dir.path(), false);
+        let toolbox = toolbox(dir.path());
 
         assert!(matches!(
             toolbox.remove("subdir", false),
@@ -910,15 +866,29 @@ mod tests {
     }
 
     #[test]
-    fn remove_escaping_path_is_rejected() {
+    fn remove_parent_dir_landing_outside_is_not_found() {
         let root = tempfile::TempDir::new().unwrap();
         let bin = root.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(root.path().join("tool.exe"), "").unwrap();
 
         assert!(matches!(
-            toolbox(&bin, false).remove("../tool.exe", false),
-            Err(ToolboxError::EscapeAttempted(_, _))
+            toolbox(&bin).remove("../tool.exe", false),
+            Err(ToolboxError::ToolNotFound(_, _))
+        ));
+    }
+
+    #[test]
+    fn remove_absolute_outside_path_is_not_found() {
+        let root = tempfile::TempDir::new().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let outside = root.path().join("tool.exe");
+        std::fs::write(&outside, "").unwrap();
+
+        assert!(matches!(
+            toolbox(&bin).remove(&outside.to_string_lossy(), false),
+            Err(ToolboxError::ToolNotFound(_, _))
         ));
     }
 
@@ -934,7 +904,7 @@ mod tests {
             let outside = root.path().join("outside.exe");
             std::fs::write(&outside, "").unwrap();
             std::os::unix::fs::symlink(&outside, bin.join("link.exe")).unwrap();
-            let toolbox = toolbox(&bin, false);
+            let toolbox = toolbox(&bin);
 
             let removed = toolbox.remove("link.exe", false).unwrap();
             assert_eq!(removed, bin.join("link.exe"));
@@ -951,7 +921,7 @@ mod tests {
             std::fs::create_dir(&outside).unwrap();
             std::fs::write(outside.join("inner.txt"), "").unwrap();
             std::os::unix::fs::symlink(&outside, bin.join("subdir")).unwrap();
-            let toolbox = toolbox(&bin, false);
+            let toolbox = toolbox(&bin);
 
             assert!(matches!(
                 toolbox.remove("subdir", false),
@@ -974,7 +944,7 @@ mod tests {
             std::fs::create_dir(&bin).unwrap();
             std::os::unix::fs::symlink(root.path().join("missing.exe"), bin.join("broken.exe"))
                 .unwrap();
-            let toolbox = toolbox(&bin, false);
+            let toolbox = toolbox(&bin);
 
             let removed = toolbox.remove("broken.exe", false).unwrap();
             assert_eq!(removed, bin.join("broken.exe"));
@@ -991,13 +961,13 @@ mod tests {
             std::fs::write(bin.join("ok.exe"), "").unwrap();
 
             assert!(matches!(
-                toolbox(&bin, false).list(),
+                toolbox(&bin).list(),
                 Err(ToolboxError::ReadError(..))
             ));
         }
 
         #[test]
-        fn remove_absolute_outside_symlink_is_rejected() {
+        fn remove_absolute_outside_symlink_is_not_found() {
             let root = tempfile::TempDir::new().unwrap();
             let bin = root.path().join("bin");
             std::fs::create_dir(&bin).unwrap();
@@ -1006,9 +976,24 @@ mod tests {
             std::os::unix::fs::symlink(&outside, bin.join("link.exe")).unwrap();
 
             assert!(matches!(
-                toolbox(&bin, false).remove(&outside.to_string_lossy(), false),
-                Err(ToolboxError::EscapeAttempted(_, _))
+                toolbox(&bin).remove(&outside.to_string_lossy(), false),
+                Err(ToolboxError::ToolNotFound(_, _))
             ));
+        }
+
+        #[test]
+        fn locate_symlink_to_outside_target_is_allowed() {
+            // A link inside the toolbox is a toolbox tool even when its
+            // target lies outside; `add` links external tools this way.
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let outside = root.path().join("outside.exe");
+            std::fs::write(&outside, "").unwrap();
+            std::os::unix::fs::symlink(&outside, bin.join("link.exe")).unwrap();
+
+            let resolved = toolbox(&bin).locate("link.exe").unwrap();
+            assert_eq!(resolved, bin.join("link.exe"));
         }
     }
 
@@ -1019,7 +1004,7 @@ mod tests {
         #[test]
         fn locate_bare_name_prefers_exe() {
             let dir = temp_dir_with_tools(&["example.bat", "example.exe", "example.ps1"]);
-            let resolved = toolbox(dir.path(), false).locate("example").unwrap();
+            let resolved = toolbox(dir.path()).locate("example").unwrap();
             assert_eq!(resolved, dir.path().join("example.exe"));
         }
 
@@ -1027,7 +1012,7 @@ mod tests {
         fn locate_bare_name_cmd_order() {
             let dir = temp_dir_with_tools(&["tool.bat", "tool.ps1"]);
             assert_eq!(
-                toolbox(dir.path(), false).locate("tool").unwrap(),
+                toolbox(dir.path()).locate("tool").unwrap(),
                 dir.path().join("tool.bat")
             );
         }
@@ -1036,7 +1021,7 @@ mod tests {
         fn locate_bare_name_ps1() {
             let dir = temp_dir_with_tools(&["tool.ps1"]);
             assert_eq!(
-                toolbox(dir.path(), false).locate("tool").unwrap(),
+                toolbox(dir.path()).locate("tool").unwrap(),
                 dir.path().join("tool.ps1")
             );
         }
@@ -1045,7 +1030,7 @@ mod tests {
         fn locate_bare_name_without_extension() {
             let dir = temp_dir_with_tools(&["tool"]);
             assert_eq!(
-                toolbox(dir.path(), false).locate("tool").unwrap(),
+                toolbox(dir.path()).locate("tool").unwrap(),
                 dir.path().join("tool")
             );
         }
@@ -1053,7 +1038,7 @@ mod tests {
         #[test]
         fn locate_case_insensitive_input() {
             let dir = temp_dir_with_tools(&["Example.EXE"]);
-            let resolved = toolbox(dir.path(), false).locate("example.exe").unwrap();
+            let resolved = toolbox(dir.path()).locate("example.exe").unwrap();
             assert!(resolved.is_file());
             let name = resolved.file_name().unwrap().to_string_lossy();
             assert!(
@@ -1065,7 +1050,7 @@ mod tests {
         #[test]
         fn locate_case_insensitive_bare() {
             let dir = temp_dir_with_tools(&["TOOL.BAT"]);
-            let resolved = toolbox(dir.path(), false).locate("tool").unwrap();
+            let resolved = toolbox(dir.path()).locate("tool").unwrap();
             assert!(resolved.is_file());
             let name = resolved.file_name().unwrap().to_string_lossy();
             assert!(
@@ -1083,7 +1068,7 @@ mod tests {
         fn locate_bare_name_no_extension_search() {
             let dir = temp_dir_with_tools(&["tool"]);
             assert_eq!(
-                toolbox(dir.path(), false).locate("tool").unwrap(),
+                toolbox(dir.path()).locate("tool").unwrap(),
                 dir.path().join("tool")
             );
         }
@@ -1092,7 +1077,7 @@ mod tests {
         fn locate_explicit_extension_missing() {
             let dir = temp_dir_with_tools(&["tool"]);
             assert!(matches!(
-                toolbox(dir.path(), false).locate("tool.exe"),
+                toolbox(dir.path()).locate("tool.exe"),
                 Err(ToolboxError::ToolNotFound(_, _))
             ));
         }
@@ -1100,14 +1085,14 @@ mod tests {
         #[test]
         fn locate_bare_name_in_subdirectory() {
             let dir = temp_dir_with_tools(&["sub/tool"]);
-            let resolved = toolbox(dir.path(), false).locate("sub/tool").unwrap();
+            let resolved = toolbox(dir.path()).locate("sub/tool").unwrap();
             assert_eq!(resolved, dir.path().join("sub/tool"));
         }
 
         #[test]
         fn remove_file_by_exact_name() {
             let dir = temp_dir_with_tools(&["tool.exe", "other.bat"]);
-            let toolbox = toolbox(dir.path(), false);
+            let toolbox = toolbox(dir.path());
 
             let removed = toolbox.remove("tool.exe", false).unwrap();
             assert_eq!(removed, dir.path().join("tool.exe"));

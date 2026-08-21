@@ -373,7 +373,9 @@ fn run_missing_bin_dir_is_runtime_error_not_127() {
 }
 
 #[test]
-fn run_escaping_path_is_rejected_by_default() {
+fn run_outside_path_exits_127() {
+    // Absolute paths and `..` that resolve outside the toolbox are rejected
+    // as not-found (exit 127), not executed.
     let toolbox = Toolbox::new();
     write_tool(
         toolbox.dir.path().parent().unwrap(),
@@ -381,32 +383,14 @@ fn run_escaping_path_is_rejected_by_default() {
         OUTSIDE_BODY,
     );
     let output = run_cli_in_toolbox(&toolbox, &["run", "../outside.bat", "hi"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).contains("outside the toolbox"),
-        "stderr was: {}",
-        stderr(&output)
-    );
+    assert_eq!(output.status.code(), Some(127));
 }
 
 #[test]
-fn run_escaping_path_allowed_with_flag() {
+fn run_absolute_path_inside_toolbox_works() {
     let toolbox = Toolbox::new();
-    // Distinct file name from the rejection test: both write into the shared
-    // parent of their temp dirs and run in parallel.
-    write_tool(
-        toolbox.dir.path().parent().unwrap(),
-        "escape-allowed.bat",
-        OUTSIDE_BODY,
-    );
-    let output = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "--allow-escape",
-        "run",
-        "../escape-allowed.bat",
-        "hi",
-    ]);
+    let abs = toolbox.path().join(ECHO_TOOL);
+    let output = run_cli_in_toolbox(&toolbox, &["run", abs.to_str().unwrap(), "hi"]);
     assert!(
         output.status.success(),
         "stderr: {}; stdout: {}",
@@ -473,13 +457,12 @@ fn add_then_run_tool() {
         "stdout was: {out}"
     );
 
-    // When `add` links (Unix always, Windows without developer mode copies),
-    // the symlink points outside the toolbox, which `run` treats as escape by
-    // default; --allow-escape covers both outcomes.
+    // The added entry is a toolbox tool even when it is a symlink pointing
+    // outside (Unix always links; Windows copies without developer mode):
+    // both outcomes run without any extra flag.
     let run = run_cli(&[
         "--bin-dir",
         toolbox.path().to_str().unwrap(),
-        "--allow-escape",
         "run",
         "new-tool.bat",
     ]);
@@ -511,7 +494,6 @@ fn add_relative_source_creates_working_entry() {
     let run = run_cli(&[
         "--bin-dir",
         toolbox.path().to_str().unwrap(),
-        "--allow-escape",
         "run",
         REL_ADD_TOOL,
     ]);

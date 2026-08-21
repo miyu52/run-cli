@@ -35,9 +35,6 @@ pub struct Cli {
     /// Custom toolbox directory; overrides RUN_CLI_BIN, defaults to ./bin.
     #[arg(short = 'b', long = "bin-dir", value_name = "PATH", help = messages::OPT_BIN_DIR_HELP)]
     pub bin_dir: Option<PathBuf>,
-    /// Allow tool paths to resolve outside the toolbox directory.
-    #[arg(long, help = messages::OPT_ALLOW_ESCAPE_HELP)]
-    pub allow_escape: bool,
     /// The subcommand to run.
     #[command(subcommand)]
     pub command: Command,
@@ -77,7 +74,7 @@ pub enum Command {
 /// the tool's own exit code).
 pub fn run() -> Result<i32, Error> {
     let cli = Cli::parse();
-    let context = Context::new(cli.bin_dir.as_deref(), cli.allow_escape);
+    let context = Context::new(cli.bin_dir.as_deref());
     match cli.command {
         Command::Run(args) => commands::run::execute(args, &context),
         Command::List(args) => commands::list::execute(args, &context),
@@ -134,10 +131,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_global_bin_dir_and_allow_escape() {
-        let cli = parse(&["--bin-dir", "tools", "--allow-escape", "list"]).unwrap();
+    fn parses_global_bin_dir() {
+        let cli = parse(&["--bin-dir", "tools", "list"]).unwrap();
         assert_eq!(cli.bin_dir.as_deref().unwrap().as_os_str(), "tools");
-        assert!(cli.allow_escape);
     }
 
     #[test]

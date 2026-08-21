@@ -28,9 +28,9 @@ pub struct Context {
 
 impl Context {
     /// Build a [`Context`] from the CLI-level options.
-    pub fn new(bin_dir: Option<&Path>, allow_escape: bool) -> Self {
+    pub fn new(bin_dir: Option<&Path>) -> Self {
         Context {
-            toolbox: Toolbox::resolve(bin_dir, allow_escape),
+            toolbox: Toolbox::resolve(bin_dir),
         }
     }
 }
