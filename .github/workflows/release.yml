@@ -12,20 +12,26 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+            ext: .exe
+          - os: ubuntu-latest
+            name: linux-x86_64
+            ext: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release
         run: cargo build --release
+      - name: Rename binary with platform suffix
+        run: cp target/release/run-cli${{ matrix.ext }} target/release/run-cli-${{ matrix.name }}${{ matrix.ext }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: run-cli-${{ matrix.os }}-x86_64
-          path: |
-            target/release/run-cli.exe
-            target/release/run-cli
+          name: run-cli-${{ matrix.name }}
+          path: target/release/run-cli-${{ matrix.name }}${{ matrix.ext }}
           if-no-files-found: error
 
   release:
@@ -42,6 +48,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            run-cli-windows-latest-x86_64/run-cli.exe
-            run-cli-ubuntu-latest-x86_64/run-cli
+            run-cli-windows-x86_64/run-cli-windows-x86_64.exe
+            run-cli-linux-x86_64/run-cli-linux-x86_64
           fail_on_unmatched_files: false
