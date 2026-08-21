@@ -42,13 +42,13 @@ cargo fmt                      # 必须保持格式化一致
 - 错误处理：统一 `Error` 枚举（`error.rs`）。退出码约定：0 成功 / 1 运行出错 / 2 用法错误（clap 自动）/ 127 工具未找到（`EXIT_TOOL_NOT_FOUND`）。"未找到"的富错误消息（含拼写建议与可用工具列表）通过 `commands::tool_not_found_error` 构造，避免在多个命令中重复。
 - 退出码经 `ExitCode::from(code as u8)` 截断为 8 位，属平台限制，README 已文档化，不要"修复"。
 - 路径边界：`Toolbox::locate` 默认要求解析结果位于工具箱内（`canonicalize` 校验，`ToolboxError::EscapeAttempted`），`--allow-escape` 放开；绝对路径输入同样受边界约束。**不要用 `Path::canonicalize` 的结果直接展示给用户**——Windows 上会带 `\\?\` 前缀，需经 `toolbox.rs::display_path` 剥离。
-- `run` 的透传规则（clap 实测行为，改参数定义时保持测试同步）：`--cwd`/`--env` 是 run-cli 自身选项，出现在工具名之后仍会被消费；工具名后出现第一个未声明的参数（或 `--`）后进入透传模式，其余全部原样传递。字面量传递用 `--` 分隔。对应测试：`cli.rs::run_*`。
+- `run` 的透传规则（uv 风格，改参数定义时保持测试同步）：`--cwd`/`--env` 是 run-cli 自身选项，**必须放在工具名之前**；工具名（第一个非选项 token）之后的一切参数原样透传（含 `--`、含与 run-cli 选项重名的 flag）。工具名前出现 `--` 时其后第一个 token 视为工具名（转义 `-` 开头的名字）。实现：`cli.rs::split_run_args` 预分割 argv，透传段不经过 clap，解析后手工注入 `args`；重建 argv 时在 tool 前加 `--` 分隔符（`tool` 位置参数因此**不要**加 `allow_hyphen_values`，否则未知选项会被吞成工具名）。**分割器中硬编码的选项集合必须与 clap 定义同步**（全局：`-b`/`--bin-dir`/`--allow-escape`；run：`--cwd`/`--env`）。对应测试：`cli.rs::split_*`、`cli.rs::run_*`、`tests/cli.rs::run_tool_*`。
 - `add`：优先 symlink（Windows 无权限时静默降级为复制，目录递归），返回 `(AddOutcome, PathBuf)`；名字必须是纯文件名（禁路径分隔符）。
 - `remove`：文件经 `locate` 解析（含扩展名补全）；目录按精确名匹配且需 `--recursive`。
 
 ## 关键技术约束（踩过的坑，不要重犯）
 
-1. **clap `trailing_var_arg` 只对"未声明的参数"透传**：声明过的选项（如 `--cwd`/`--env`）即使在位置参数之后仍会被 clap 消费；不要假设"工具名之后全部透传"。
+1. **clap `trailing_var_arg` 只对"未声明的参数"透传**：声明过的选项（如 `--cwd`/`--env`）即使在位置参数之后仍会被 clap 消费，所以 `run` 的 uv 风格透传靠 `cli.rs::split_run_args` 预分割实现，透传段完全不经过 clap；不要在 RunArgs 的 `tool` 上加 `allow_hyphen_values`（会把工具名前的未知选项吞成工具名）。
 2. **`use clap::Args;` 与 `pub struct Args` 同名冲突**：命令模块的 Args 结构用全限定 `#[derive(Debug, clap::Args)]`，不要 `use clap::Args`。
 3. **`DirEntry::file_type()` 不跟随符号链接**：`Toolbox::list` 必须用 `entry.metadata()`，否则 `add` 创建的符号链接工具不会出现在 `list` 里。
 4. **`Path::join` 遇绝对路径会整体替换**：`dir.join("C:\\x")` 得到 `C:\x`，remove/add 等操作必须校验绝对路径或依赖 `ensure_within` 兜底。

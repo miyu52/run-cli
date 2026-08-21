@@ -175,6 +175,33 @@ fn run_tool_passes_through_args() {
 }
 
 #[test]
+fn run_tool_passes_through_run_cli_options_verbatim() {
+    let toolbox = Toolbox::new();
+    let output = run_cli_in_toolbox(
+        &toolbox,
+        &["run", "echo", "--cwd", "somewhere", "--env", "A=1"],
+    );
+    assert!(output.status.success());
+
+    let out = stdout(&output);
+    assert!(out.contains("--cwd"), "stdout was: {out}");
+    assert!(out.contains("somewhere"), "stdout was: {out}");
+    assert!(out.contains("--env"), "stdout was: {out}");
+    assert!(out.contains("A=1"), "stdout was: {out}");
+}
+
+#[test]
+fn run_tool_preserves_double_dash_after_tool() {
+    let toolbox = Toolbox::new();
+    let output = run_cli_in_toolbox(&toolbox, &["run", "echo", "--", "--help"]);
+    assert!(output.status.success());
+
+    let out = stdout(&output);
+    assert!(out.contains("--"), "stdout was: {out}");
+    assert!(out.contains("--help"), "stdout was: {out}");
+}
+
+#[test]
 fn run_tool_passes_through_exit_code() {
     let toolbox = Toolbox::new();
     let output = run_cli_in_toolbox(&toolbox, &["run", "exit42"]);

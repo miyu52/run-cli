@@ -66,13 +66,20 @@ run-cli remove example           # 移除
 run-cli completions powershell | Out-String | Invoke-Expression
 ```
 
-### run 的参数透传规则
+### run 的参数透传规则（uv 风格）
 
-`run` 是 run-cli 的选项，其余参数在工具名之后原样透传：
+`run` 的工具名是第一个非选项参数，**工具名之后的一切参数原样透传**，包括与 run-cli 自身选项重名的 flag：
 
 - `run-cli run example --help -v x` → 工具收到 `--help -v x`
-- `run-cli run example --cwd work` → `--cwd` 是 run-cli 自身的选项，**不会**透传给工具
-- 需要把字面量 `--cwd`/`--env` 传给工具时用 `--` 分隔：`run-cli run example -- --cwd work`
+- `run-cli run example --cwd work` → 工具收到字面量 `--cwd work`（不会被 run-cli 消费）
+- `run-cli run example -- --help` → 工具收到 `-- --help`（`--` 也原样透传）
+
+run-cli 自身选项必须放在工具名之前：
+
+- `run-cli run --cwd work --env FOO=bar example -v` → `--cwd`/`--env` 由 run-cli 消费，`-v` 透传
+- 全局选项（`--bin-dir`/`--allow-escape`）同样必须放在 `run` 之前；放在工具名后会被透传给工具
+
+工具名以 `-` 开头时用 `--` 转义：`run-cli run -- -weird-tool`。
 
 ## 路径解析规则
 

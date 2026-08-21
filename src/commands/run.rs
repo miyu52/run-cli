@@ -9,9 +9,9 @@ use crate::runner::{self, Invocation, RunOptions};
 
 /// Arguments for `run-cli run`.
 ///
-/// `--cwd` / `--env` are run-cli's own options and are consumed wherever they
-/// appear before the first unrecognized argument; use `--` before them to
-/// pass them through to the tool instead.
+/// `--cwd` / `--env` are run-cli's own options and must appear before the
+/// tool name; everything after the tool name is passed through verbatim
+/// (uv-style, enforced by the argv splitter in `cli.rs`).
 #[derive(Debug, clap::Args)]
 pub struct Args {
     /// Name or path of the tool to run.
