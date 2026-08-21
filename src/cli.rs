@@ -32,7 +32,8 @@ use crate::messages;
     long_about = None
 )]
 pub struct Cli {
-    /// Custom toolbox directory; overrides RUN_CLI_BIN, defaults to ./bin.
+    /// Custom toolbox directory; overrides RUN_CLI_BIN, defaults to bin next
+    /// to this executable (Unix: ~/.run-cli/bin).
     #[arg(short = 'b', long = "bin-dir", value_name = "PATH", help = messages::OPT_BIN_DIR_HELP)]
     pub bin_dir: Option<PathBuf>,
     /// The subcommand to run.

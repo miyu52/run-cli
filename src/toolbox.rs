@@ -21,8 +21,9 @@ use std::sync::OnceLock;
 
 use thiserror::Error;
 
-/// Default toolbox directory when neither the CLI flag nor the environment
-/// variable is set.
+/// Name of the toolbox directory when neither the CLI flag nor the
+/// environment variable is set; it lives next to the run-cli executable on
+/// Windows and under the user's home directory (`~/.run-cli`) on Unix.
 pub const DEFAULT_BIN_DIR: &str = "bin";
 /// Environment variable overriding the toolbox directory.
 pub const ENV_BIN_DIR: &str = "RUN_CLI_BIN";
@@ -127,7 +128,8 @@ pub struct Toolbox {
 }
 
 /// Resolve the toolbox directory with priority: CLI arg > `RUN_CLI_BIN` >
-/// `./bin`. An empty environment variable counts as unset.
+/// platform default (`bin` next to the run-cli executable on Windows,
+/// `~/.run-cli/bin` on Unix). An empty environment variable counts as unset.
 pub fn resolve_bin_dir(cli_bin_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = cli_bin_dir {
         return dir.to_path_buf();
@@ -137,7 +139,32 @@ pub fn resolve_bin_dir(cli_bin_dir: Option<&Path>) -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    PathBuf::from(DEFAULT_BIN_DIR)
+    default_bin_dir()
+}
+
+/// The default toolbox directory: `bin` next to the run-cli executable on
+/// Windows, `~/.run-cli/bin` on Unix. Falls back to `./bin` when the
+/// executable path or home directory cannot be determined.
+fn default_bin_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        match env::current_exe() {
+            Ok(exe) => exe
+                .parent()
+                .map(|dir| dir.join(DEFAULT_BIN_DIR))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_BIN_DIR)),
+            Err(_) => PathBuf::from(DEFAULT_BIN_DIR),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        match env::var_os("HOME") {
+            Some(home) if !home.is_empty() => {
+                PathBuf::from(home).join(".run-cli").join(DEFAULT_BIN_DIR)
+            }
+            _ => PathBuf::from(DEFAULT_BIN_DIR),
+        }
+    }
 }
 
 impl Toolbox {
@@ -615,15 +642,33 @@ mod tests {
     #[test]
     fn bin_dir_falls_back_to_default() {
         with_env(ENV_BIN_DIR, None, || {
-            assert_eq!(resolve_bin_dir(None), PathBuf::from(DEFAULT_BIN_DIR));
+            assert_eq!(resolve_bin_dir(None), default_bin_dir());
         });
     }
 
     #[test]
     fn bin_dir_empty_env_falls_back_to_default() {
         with_env(ENV_BIN_DIR, Some(""), || {
-            assert_eq!(resolve_bin_dir(None), PathBuf::from(DEFAULT_BIN_DIR));
+            assert_eq!(resolve_bin_dir(None), default_bin_dir());
         });
+    }
+
+    /// The Windows default toolbox lives next to the run-cli executable.
+    #[cfg(windows)]
+    #[test]
+    fn default_bin_dir_is_next_to_executable() {
+        let exe = env::current_exe().unwrap();
+        let expected = exe.parent().unwrap().join(DEFAULT_BIN_DIR);
+        assert_eq!(default_bin_dir(), expected);
+    }
+
+    /// The Unix default toolbox lives under the user's home directory.
+    #[cfg(not(windows))]
+    #[test]
+    fn default_bin_dir_is_under_home() {
+        let home = env::var_os("HOME").expect("HOME is set in the test environment");
+        let expected = PathBuf::from(home).join(".run-cli").join(DEFAULT_BIN_DIR);
+        assert_eq!(default_bin_dir(), expected);
     }
 
     #[test]

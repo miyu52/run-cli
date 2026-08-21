@@ -2,9 +2,10 @@
 //!
 //! Tools are looked up by name inside a toolbox directory resolved with the
 //! priority CLI argument `--bin-dir` > environment variable `RUN_CLI_BIN` >
-//! `./bin`. The `run` subcommand resolves a tool name (with platform
-//! extension completion on Windows) and executes it, passing every argument
-//! after the tool name through untouched.
+//! platform default (`bin` next to the run-cli executable on Windows,
+//! `~/.run-cli/bin` on Unix). The `run` subcommand resolves a tool name (with
+//! platform extension completion on Windows) and executes it, passing every
+//! argument after the tool name through untouched.
 //!
 //! Tool paths must stay inside the toolbox directory: absolute paths and
 //! `..` are judged by where they resolve, and anything pointing outside the

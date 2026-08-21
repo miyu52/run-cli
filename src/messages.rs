@@ -43,8 +43,7 @@ impl From<&Tool> for ToolJson {
 
 pub const APP_ABOUT: &str = "Manage and run tools from a toolbox directory";
 
-pub const OPT_BIN_DIR_HELP: &str =
-    "Custom toolbox directory; overrides RUN_CLI_BIN, defaults to ./bin";
+pub const OPT_BIN_DIR_HELP: &str = "Custom toolbox directory; overrides RUN_CLI_BIN, defaults to bin next to this executable (Unix: ~/.run-cli/bin)";
 
 pub const CMD_RUN_ABOUT: &str =
     "Run a tool from the toolbox; arguments after the tool name are passed through";

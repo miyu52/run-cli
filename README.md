@@ -26,7 +26,9 @@ cargo test
 
 1. `--bin-dir <PATH>` / `-b <PATH>` 参数
 2. `RUN_CLI_BIN` 环境变量（空值视为未设置）
-3. 默认 `./bin`
+3. 平台默认：Windows 为**可执行文件同目录下的 `bin`**，Unix 为 `~/.run-cli/bin`；无法确定可执行文件路径或 `$HOME` 时回退 `./bin`
+
+默认目录（含父目录，如 Unix 的 `~/.run-cli`）在首次 `add` 时自动创建；`run`/`list`/`which`/`remove` 不会创建，目录不存在时报错（exit 1）。
 
 ## 用法
 
