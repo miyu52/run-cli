@@ -111,6 +111,8 @@ run-cli 自身选项必须放在工具名之前：
 
 注：进程退出码按平台限制为 8 位，子进程退出码超过 255 时会被截断。
 
+另外注意：`run`/`which`/`remove` 在**工具箱目录不存在**时报 1（"bin directory not found"），而不是 127——127 只表示目录存在但工具未找到。
+
 ## 平台说明
 
 - Windows：`.ps1` 通过 PowerShell（`-NoProfile -ExecutionPolicy Bypass -File`）运行；`add` 默认尝试符号链接（需要开发者模式/管理员权限），失败时自动降级为复制

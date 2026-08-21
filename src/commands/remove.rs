@@ -1,6 +1,6 @@
 //! The `remove` command: remove a tool from the toolbox.
 
-use crate::commands::{Context, tool_not_found_error};
+use crate::commands::{Context, map_tool_not_found};
 use crate::error::Error;
 use crate::messages;
 use crate::toolbox::ToolboxError;
@@ -21,7 +21,7 @@ pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
     let path = match context.toolbox.remove(&args.tool, args.recursive) {
         Ok(path) => path,
         Err(ToolboxError::ToolNotFound(..)) => {
-            return Err(tool_not_found_error(&context.toolbox, &args.tool));
+            return Err(map_tool_not_found(&context.toolbox, &args.tool));
         }
         Err(err) => return Err(err.into()),
     };

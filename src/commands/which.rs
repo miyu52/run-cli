@@ -1,7 +1,6 @@
 //! The `which` command: resolve a tool name without running it.
 
-use crate::EXIT_ERROR;
-use crate::commands::{Context, locate_tool};
+use crate::commands::{Context, resolve_absolute};
 use crate::error::Error;
 use crate::messages;
 
@@ -15,9 +14,7 @@ pub struct Args {
 
 /// Resolve the tool and print its absolute path.
 pub fn run(args: Args, context: &Context) -> Result<i32, Error> {
-    let tool_path = locate_tool(&context.toolbox, &args.tool)?;
-    let absolute = std::path::absolute(&tool_path)
-        .map_err(|e| Error::formatted(EXIT_ERROR, messages::absolute_path_error(&tool_path, &e)))?;
+    let absolute = resolve_absolute(&context.toolbox, &args.tool)?;
     println!("{}", absolute.display());
     Ok(0)
 }

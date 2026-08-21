@@ -80,6 +80,9 @@ pub enum RunError {
     /// A `--env` value has an empty key.
     #[error("invalid --env value '{0}'; key must not be empty")]
     EmptyEnvKey(String),
+    /// The requested working directory does not exist or is not a directory.
+    #[error("working directory not found: {0}")]
+    MissingCwd(PathBuf),
 }
 
 /// Options controlling how a tool is executed.
@@ -117,6 +120,9 @@ pub fn execute(
 ) -> Result<i32, RunError> {
     let mut command = invocation.build_command(args);
     if let Some(cwd) = &options.cwd {
+        if !cwd.is_dir() {
+            return Err(RunError::MissingCwd(cwd.clone()));
+        }
         command.current_dir(cwd);
     }
     for (key, value) in &options.env {
@@ -210,6 +216,19 @@ mod tests {
         assert!(matches!(
             execute(&invocation, &[], &RunOptions::default()),
             Err(RunError::Spawn(_, _))
+        ));
+    }
+
+    #[test]
+    fn execute_missing_cwd_is_rejected_before_spawn() {
+        let invocation = Invocation::Direct(PathBuf::from("run-cli-definitely-missing-binary-xyz"));
+        let options = RunOptions {
+            cwd: Some(PathBuf::from("run-cli-definitely-missing-cwd-xyz")),
+            ..RunOptions::default()
+        };
+        assert!(matches!(
+            execute(&invocation, &[], &options),
+            Err(RunError::MissingCwd(_))
         ));
     }
 

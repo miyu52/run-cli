@@ -160,7 +160,8 @@ impl Toolbox {
     }
 
     /// List the contents of the toolbox directory (files and directories,
-    /// sorted by name). Symlinks are followed.
+    /// sorted by name, absolute paths). Symlinks are followed; entries that
+    /// cannot be read are reported as an error rather than skipped.
     pub fn list(&self) -> Result<Vec<Tool>, ToolboxError> {
         let entries = fs::read_dir(&self.dir).map_err(|e| match e.kind() {
             ErrorKind::NotFound => ToolboxError::MissingDirectory(self.dir.clone()),
@@ -168,34 +169,34 @@ impl Toolbox {
             _ => ToolboxError::ReadError(self.dir.clone(), e),
         })?;
 
-        let mut tools: Vec<Tool> = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                // fs::metadata follows symlinks (stat semantics), so tools
-                // added as links still show up; DirEntry::metadata() does not
-                // follow symlinks on Unix (lstat semantics).
-                let path = entry.path();
-                let metadata = fs::metadata(&path).ok()?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if metadata.is_file() {
-                    Some(Tool {
-                        name,
-                        path,
-                        kind: ToolKind::File,
-                        size: Some(metadata.len()),
-                    })
-                } else if metadata.is_dir() {
-                    Some(Tool {
-                        name,
-                        path,
-                        kind: ToolKind::Directory,
-                        size: None,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut tools = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| ToolboxError::ReadError(self.dir.clone(), e))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // fs::metadata follows symlinks (stat semantics), so tools added
+            // as links still show up; DirEntry::metadata() does not follow
+            // symlinks on Unix (lstat semantics). Absolute paths keep the
+            // listing consistent with `which` regardless of the bin-dir form.
+            let path = std::path::absolute(entry.path())
+                .map_err(|e| ToolboxError::ReadError(self.dir.clone(), e))?;
+            let metadata =
+                fs::metadata(&path).map_err(|e| ToolboxError::ReadError(self.dir.clone(), e))?;
+            if metadata.is_file() {
+                tools.push(Tool {
+                    name,
+                    path,
+                    kind: ToolKind::File,
+                    size: Some(metadata.len()),
+                });
+            } else if metadata.is_dir() {
+                tools.push(Tool {
+                    name,
+                    path,
+                    kind: ToolKind::Directory,
+                    size: None,
+                });
+            }
+        }
 
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(tools)
@@ -379,7 +380,11 @@ impl Toolbox {
             }
         };
         if meta.file_type().is_symlink() {
-            if !recursive {
+            // Only directory symlinks keep the `--recursive` requirement;
+            // file symlinks and broken links (whose target cannot be
+            // followed) are removed without it. Removing a link never
+            // touches its target.
+            if fs::metadata(&candidate).is_ok_and(|m| m.is_dir()) && !recursive {
                 return Err(ToolboxError::RemoveDirectory(candidate.clone()));
             }
             remove_link(&candidate).map_err(|e| ToolboxError::RemoveError(candidate.clone(), e))?;
@@ -579,6 +584,14 @@ mod tests {
     fn list_empty_dir() {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(toolbox(dir.path(), false).list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_returns_absolute_paths() {
+        let dir = temp_dir_with_tools(&["a.exe"]);
+        let tools = toolbox(dir.path(), false).list().unwrap();
+        assert!(tools[0].path.is_absolute());
+        assert_eq!(tools[0].path, dir.path().join("a.exe"));
     }
 
     #[test]
@@ -888,6 +901,35 @@ mod tests {
                 outside.join("inner.txt").exists(),
                 "target must not be removed"
             );
+        }
+
+        #[test]
+        fn remove_broken_file_symlink_without_recursive() {
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            std::os::unix::fs::symlink(root.path().join("missing.exe"), bin.join("broken.exe"))
+                .unwrap();
+            let toolbox = toolbox(&bin, false);
+
+            let removed = toolbox.remove("broken.exe", false).unwrap();
+            assert_eq!(removed, bin.join("broken.exe"));
+            assert!(!bin.join("broken.exe").exists(), "link should be removed");
+        }
+
+        #[test]
+        fn list_broken_symlink_is_reported_as_error() {
+            let root = tempfile::TempDir::new().unwrap();
+            let bin = root.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            std::os::unix::fs::symlink(root.path().join("missing.exe"), bin.join("broken.exe"))
+                .unwrap();
+            std::fs::write(bin.join("ok.exe"), "").unwrap();
+
+            assert!(matches!(
+                toolbox(&bin, false).list(),
+                Err(ToolboxError::ReadError(..))
+            ));
         }
 
         #[test]

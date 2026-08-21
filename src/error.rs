@@ -21,6 +21,13 @@ pub enum Error {
     /// Serializing structured output failed.
     #[error("{0}")]
     Serialize(#[from] serde_json::Error),
+    /// An unresolvable tool name, with a rich message (spelling suggestion and
+    /// available tools).
+    #[error("{message}")]
+    ToolNotFound {
+        /// Message printed to stderr.
+        message: String,
+    },
     /// A pre-formatted message carrying an explicit exit code.
     #[error("{message}")]
     Formatted {
@@ -44,6 +51,7 @@ impl Error {
     pub fn code(&self) -> i32 {
         match self {
             Error::Toolbox(ToolboxError::ToolNotFound(..)) => EXIT_TOOL_NOT_FOUND,
+            Error::ToolNotFound { .. } => EXIT_TOOL_NOT_FOUND,
             Error::Formatted { code, .. } => *code,
             _ => EXIT_ERROR,
         }

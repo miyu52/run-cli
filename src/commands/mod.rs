@@ -14,7 +14,7 @@ pub mod which;
 
 use std::path::{Path, PathBuf};
 
-use crate::EXIT_TOOL_NOT_FOUND;
+use crate::EXIT_ERROR;
 use crate::error::Error;
 use crate::messages;
 use crate::suggest;
@@ -42,21 +42,38 @@ impl Context {
 pub fn locate_tool(toolbox: &Toolbox, name: &str) -> Result<PathBuf, Error> {
     match toolbox.locate(name) {
         Ok(path) => Ok(path),
-        Err(ToolboxError::ToolNotFound(..)) => Err(tool_not_found_error(toolbox, name)),
+        Err(ToolboxError::ToolNotFound(..)) => Err(map_tool_not_found(toolbox, name)),
         Err(err) => Err(err.into()),
     }
+}
+
+/// Build the error for an unresolvable tool name: a missing toolbox
+/// directory is a runtime error (exit 1), while a real "not found" produces
+/// the rich exit-127 message.
+pub fn map_tool_not_found(toolbox: &Toolbox, name: &str) -> Error {
+    if !toolbox.dir().is_dir() {
+        return Error::Toolbox(ToolboxError::MissingDirectory(toolbox.dir().to_path_buf()));
+    }
+    tool_not_found_error(toolbox, name)
 }
 
 /// Build the exit-127 error message for an unresolvable tool name.
 pub fn tool_not_found_error(toolbox: &Toolbox, name: &str) -> Error {
     let available = toolbox.list_names().unwrap_or_default();
-    Error::formatted(
-        EXIT_TOOL_NOT_FOUND,
-        messages::tool_not_found(
+    Error::ToolNotFound {
+        message: messages::tool_not_found(
             name,
             toolbox.dir(),
             &available,
             suggest::suggest(name, &available).as_deref(),
         ),
-    )
+    }
+}
+
+/// Resolve a tool name to an absolute path, like [`locate_tool`] followed by
+/// [`std::path::absolute`]; used by `run` and `which`.
+pub fn resolve_absolute(toolbox: &Toolbox, name: &str) -> Result<PathBuf, Error> {
+    let tool_path = locate_tool(toolbox, name)?;
+    std::path::absolute(&tool_path)
+        .map_err(|e| Error::formatted(EXIT_ERROR, messages::absolute_path_error(&tool_path, &e)))
 }

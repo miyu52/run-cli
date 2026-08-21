@@ -302,6 +302,14 @@ fn run_missing_tool_in_empty_toolbox() {
 }
 
 #[test]
+fn run_missing_bin_dir_is_runtime_error_not_127() {
+    let missing = PathBuf::from("definitely-missing-run-dir");
+    let output = run_cli(&["--bin-dir", missing.to_str().unwrap(), "run", "any-tool"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("bin directory not found"));
+}
+
+#[test]
 fn run_escaping_path_is_rejected_by_default() {
     let toolbox = Toolbox::new();
     write_tool(
@@ -366,6 +374,14 @@ fn which_missing_tool_exits_127() {
     let toolbox = Toolbox::new();
     let output = run_cli_in_toolbox(&toolbox, &["which", "nope"]);
     assert_eq!(output.status.code(), Some(127));
+}
+
+#[test]
+fn which_missing_bin_dir_is_runtime_error_not_127() {
+    let missing = PathBuf::from("definitely-missing-which-dir");
+    let output = run_cli(&["--bin-dir", missing.to_str().unwrap(), "which", "any-tool"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("bin directory not found"));
 }
 
 // --- add / remove ---
@@ -478,6 +494,14 @@ fn remove_missing_tool_exits_127() {
     let toolbox = Toolbox::new();
     let output = run_cli_in_toolbox(&toolbox, &["remove", "nope"]);
     assert_eq!(output.status.code(), Some(127));
+}
+
+#[test]
+fn remove_missing_bin_dir_is_runtime_error_not_127() {
+    let missing = PathBuf::from("definitely-missing-remove-dir");
+    let output = run_cli(&["--bin-dir", missing.to_str().unwrap(), "remove", "any-tool"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("bin directory not found"));
 }
 
 // --- completions ---
