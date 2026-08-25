@@ -79,9 +79,11 @@ fn write_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-/// A toolbox directory inside a temp dir.
+/// A toolbox directory inside a temp dir, with an isolated config file (the
+/// default config location is never touched in tests).
 struct Toolbox {
     dir: TempDir,
+    config: PathBuf,
 }
 
 impl Toolbox {
@@ -96,7 +98,10 @@ impl Toolbox {
         write_tool(&dir.path().join("scripts"), "sub.bat", "@echo off\necho %*");
         #[cfg(not(windows))]
         write_tool(&dir.path().join("scripts"), "sub", "echo \"$*\"");
-        Toolbox { dir }
+        Toolbox {
+            config: dir.path().join("config.toml"),
+            dir,
+        }
     }
 
     fn path(&self) -> &Path {
@@ -104,33 +109,49 @@ impl Toolbox {
     }
 }
 
-fn run_cli_with_env(args: &[&str], env: &[(&str, &str)]) -> Output {
+fn run_cli_opt(
+    bin_dir: Option<&Path>,
+    config: Option<&Path>,
+    cwd: Option<&Path>,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_run-cli"));
-    cmd.args(args).env_remove("RUN_CLI_BIN");
+    cmd.env_remove("RUN_CLI_BIN").env_remove("RUN_CLI_CONFIG");
+    if let Some(dir) = bin_dir {
+        cmd.arg("--bin-dir").arg(dir);
+    }
+    if let Some(path) = config {
+        cmd.arg("--config").arg(path);
+    }
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     for (key, value) in env {
         cmd.env(key, value);
     }
+    cmd.args(args);
     cmd.output().expect("failed to spawn run-cli")
 }
 
+/// Run with an isolated (empty) config so tests never read the real default
+/// config file.
 fn run_cli(args: &[&str]) -> Output {
-    run_cli_with_env(args, &[])
+    let dir = TempDir::new().unwrap();
+    run_cli_opt(None, Some(&dir.path().join("config.toml")), None, &[], args)
+}
+
+fn run_cli_with_env(args: &[&str], env: &[(&str, &str)]) -> Output {
+    let dir = TempDir::new().unwrap();
+    run_cli_opt(None, Some(&dir.path().join("config.toml")), None, env, args)
 }
 
 fn run_cli_in_toolbox(toolbox: &Toolbox, args: &[&str]) -> Output {
-    let mut full = vec![
-        "--bin-dir".to_string(),
-        toolbox.path().to_string_lossy().into_owned(),
-    ];
-    full.extend(args.iter().map(|a| a.to_string()));
-    let strings: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
-    run_cli(&strings)
+    run_cli_opt(Some(toolbox.path()), Some(&toolbox.config), None, &[], args)
 }
 
-fn run_cli_with_cwd(cwd: &Path, args: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_run-cli"));
-    cmd.args(args).env_remove("RUN_CLI_BIN").current_dir(cwd);
-    cmd.output().expect("failed to spawn run-cli")
+fn run_cli_with_config(config: &Path, args: &[&str]) -> Output {
+    run_cli_opt(None, Some(config), None, &[], args)
 }
 
 fn stderr(output: &Output) -> String {
@@ -163,7 +184,13 @@ fn list_shows_tools_sorted_with_dirs() {
 #[test]
 fn list_empty_toolbox() {
     let dir = TempDir::new().unwrap();
-    let output = run_cli(&["--bin-dir", dir.path().to_str().unwrap(), "list"]);
+    let output = run_cli_opt(
+        Some(dir.path()),
+        Some(&dir.path().join("config.toml")),
+        None,
+        &[],
+        &["list"],
+    );
     assert!(output.status.success());
     assert!(stdout(&output).contains("no tools"));
 }
@@ -171,18 +198,16 @@ fn list_empty_toolbox() {
 #[test]
 fn list_json_empty_toolbox_is_empty_array() {
     let dir = TempDir::new().unwrap();
-    let output = run_cli(&["--bin-dir", dir.path().to_str().unwrap(), "list", "--json"]);
+    let output = run_cli_opt(
+        Some(dir.path()),
+        Some(&dir.path().join("config.toml")),
+        None,
+        &[],
+        &["list", "--json"],
+    );
     assert!(output.status.success());
     let parsed: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(parsed, serde_json::json!([]));
-}
-
-#[test]
-fn list_missing_bin_dir_fails() {
-    let missing = PathBuf::from("definitely-missing-dir");
-    let output = run_cli(&["--bin-dir", missing.to_str().unwrap(), "list"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains(&missing.display().to_string()));
 }
 
 #[test]
@@ -201,6 +226,111 @@ fn list_json_is_valid_and_contains_entries() {
     assert!(names.contains(&"scripts"));
     assert!(parsed.iter().any(|tool| tool["kind"] == "directory"));
     assert!(parsed.iter().any(|tool| tool["kind"] == "file"));
+    assert!(
+        parsed.iter().all(|tool| tool["origin"] == "bin"),
+        "toolbox-only listing should be origin=bin"
+    );
+}
+
+#[test]
+fn list_merges_config_and_bin_with_origins() {
+    let toolbox = Toolbox::new();
+    let source = toolbox.path().parent().unwrap().join("from-config.bat");
+    std::fs::write(&source, "@echo off\necho from-config").unwrap();
+
+    let add = run_cli_opt(
+        Some(toolbox.path()),
+        Some(&toolbox.config),
+        None,
+        &[],
+        &["add", source.to_str().unwrap()],
+    );
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    let output = run_cli_in_toolbox(&toolbox, &["list", "--json"]);
+    assert!(output.status.success());
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&output)).unwrap();
+    let config_entry = parsed
+        .iter()
+        .find(|tool| tool["name"] == "from-config.bat")
+        .expect("config entry should be listed");
+    assert_eq!(config_entry["origin"], "config");
+    let bin_entry = parsed
+        .iter()
+        .find(|tool| tool["name"] == ECHO_TOOL)
+        .expect("bin entry should be listed");
+    assert_eq!(bin_entry["origin"], "bin");
+}
+
+#[test]
+fn list_config_shadows_bin_same_name() {
+    let toolbox = Toolbox::new();
+    let source = toolbox.path().parent().unwrap().join("shadow.bat");
+    std::fs::write(&source, "@echo off\necho shadow").unwrap();
+    let add = run_cli_opt(
+        Some(toolbox.path()),
+        Some(&toolbox.config),
+        None,
+        &[],
+        &["add", source.to_str().unwrap(), "--name", ECHO_TOOL],
+    );
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    let output = run_cli_in_toolbox(&toolbox, &["list", "--json"]);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&output)).unwrap();
+    let matches: Vec<&serde_json::Value> = parsed
+        .iter()
+        .filter(|tool| tool["name"] == ECHO_TOOL)
+        .collect();
+    assert_eq!(matches.len(), 1, "the config entry shadows the bin entry");
+    assert_eq!(matches[0]["origin"], "config");
+}
+
+#[test]
+fn list_skips_config_entry_with_missing_path() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let gone = dir.path().join("gone.bat");
+    std::fs::write(&gone, "@echo off").unwrap();
+    let alive = dir.path().join("alive.bat");
+    std::fs::write(&alive, "@echo off").unwrap();
+    let add_gone = run_cli_with_config(&config, &["add", gone.to_str().unwrap()]);
+    assert!(add_gone.status.success(), "stderr: {}", stderr(&add_gone));
+    let add_alive = run_cli_with_config(&config, &["add", alive.to_str().unwrap()]);
+    assert!(add_alive.status.success());
+    std::fs::remove_file(&gone).unwrap();
+
+    let output = run_cli_with_config(&config, &["list", "--json"]);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&output)).unwrap();
+    let names: Vec<&str> = parsed
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["alive.bat"], "missing config path is skipped");
+}
+
+#[test]
+fn list_missing_bin_dir_shows_config_entries_only() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = dir.path().join("only-config.bat");
+    std::fs::write(&source, "@echo off").unwrap();
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    let missing = dir.path().join("definitely-missing-bin");
+    let output = run_cli_opt(
+        Some(&missing),
+        Some(&config),
+        None,
+        &[],
+        &["list", "--json"],
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0]["name"], "only-config.bat");
+    assert_eq!(parsed[0]["origin"], "config");
 }
 
 // --- run ---
@@ -354,14 +484,16 @@ fn run_with_cwd_and_relative_bin_dir() {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    let output = run_cli(&[
-        "--bin-dir",
-        &rel,
-        "run",
-        "--cwd",
-        sub.to_str().unwrap(),
-        CWD_ENV_TOOL,
-    ]);
+    let scratch = TempDir::new().unwrap();
+    // run-cli itself stays in the test working directory (the relative
+    // `--bin-dir` resolves against it); only the tool runs with `--cwd`.
+    let output = run_cli_opt(
+        Some(Path::new(&rel)),
+        Some(&scratch.path().join("config.toml")),
+        None,
+        &[],
+        &["run", "--cwd", sub.to_str().unwrap(), CWD_ENV_TOOL],
+    );
     assert!(output.status.success(), "stderr: {}", stderr(&output));
 
     let out = stdout(&output);
@@ -382,14 +514,30 @@ fn run_missing_tool_exits_127_with_suggestion_and_list() {
 }
 
 #[test]
+fn run_missing_tool_suggests_config_names() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "echo.bat", ECHO_BODY);
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_with_config(&config, &["run", "echoe"]);
+    assert_eq!(output.status.code(), Some(127));
+    let err = stderr(&output);
+    assert!(err.contains("did you mean"), "stderr was: {err}");
+    assert!(err.contains("echo.bat"), "stderr was: {err}");
+}
+
+#[test]
 fn run_missing_tool_in_empty_toolbox() {
     let dir = TempDir::new().unwrap();
-    let output = run_cli(&[
-        "--bin-dir",
-        dir.path().to_str().unwrap(),
-        "run",
-        "definitely-missing",
-    ]);
+    let output = run_cli_opt(
+        Some(dir.path()),
+        Some(&dir.path().join("config.toml")),
+        None,
+        &[],
+        &["run", "definitely-missing"],
+    );
     assert_eq!(output.status.code(), Some(127));
 }
 
@@ -429,6 +577,195 @@ fn run_absolute_path_inside_toolbox_works() {
     assert!(stdout(&output).contains("hi"));
 }
 
+// --- run via config ---
+
+#[test]
+fn add_then_run_tool() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "new-tool.bat", "@echo off\necho added");
+
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success(), "stderr was: {}", stderr(&add));
+    assert!(
+        stdout(&add).contains("added"),
+        "stdout was: {}",
+        stdout(&add)
+    );
+    assert!(config.is_file(), "config file should be written");
+
+    let run = run_cli_with_config(&config, &["run", "new-tool.bat", "hi"]);
+    assert!(run.status.success(), "stderr was: {}", stderr(&run));
+    assert!(
+        stdout(&run).contains("added"),
+        "stdout was: {}",
+        stdout(&run)
+    );
+}
+
+#[test]
+fn run_registered_tool_passes_through_args() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "echo.bat", ECHO_BODY);
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_with_config(&config, &["run", "echo.bat", "hello", "--help", "-v"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("hello"), "stdout was: {out}");
+    assert!(out.contains("--help"), "stdout was: {out}");
+    assert!(out.contains("-v"), "stdout was: {out}");
+}
+
+#[cfg(windows)]
+#[test]
+fn run_registered_ps1_tool_through_powershell() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "greet.ps1", "Write-Output $args");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_with_config(&config, &["run", "greet", "hello", "--flag"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("hello"), "stdout was: {out}");
+    assert!(out.contains("--flag"), "stdout was: {out}");
+}
+
+#[test]
+fn config_priority_over_bin() {
+    let toolbox = Toolbox::new();
+    #[cfg(windows)]
+    let body = "@echo off\necho config-ran";
+    #[cfg(not(windows))]
+    let body = "echo \"config-ran\"";
+    let config_src = write_tool(toolbox.path().parent().unwrap(), "config-echo.bat", body);
+    let add = run_cli_opt(
+        Some(toolbox.path()),
+        Some(&toolbox.config),
+        None,
+        &[],
+        &["add", config_src.to_str().unwrap(), "--name", ECHO_TOOL],
+    );
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    // The same name exists in the toolbox, but the config entry wins.
+    let output = run_cli_in_toolbox(&toolbox, &["run", ECHO_TOOL, "x"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("config-ran"),
+        "stdout was: {}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn run_registered_missing_path_exits_1() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "gone.bat", "@echo off");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+    std::fs::remove_file(&source).unwrap();
+
+    let output = run_cli_with_config(&config, &["run", "gone.bat"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(err.contains("gone"), "stderr was: {err}");
+    assert!(err.contains("not found"), "stderr was: {err}");
+    assert!(!err.contains("did you mean"), "stderr was: {err}");
+}
+
+#[test]
+fn run_registered_missing_path_does_not_fallback_to_bin() {
+    let toolbox = Toolbox::new();
+    let source = toolbox.path().parent().unwrap().join("gone.bat");
+    std::fs::write(&source, "@echo off").unwrap();
+    let add = run_cli_opt(
+        Some(toolbox.path()),
+        Some(&toolbox.config),
+        None,
+        &[],
+        &["add", source.to_str().unwrap(), "--name", ECHO_TOOL],
+    );
+    assert!(add.status.success());
+    std::fs::remove_file(&source).unwrap();
+
+    // The toolbox has a real `echo.bat`, but the broken config registration
+    // shadows it and must be reported loudly, not silently ignored.
+    let output = run_cli_in_toolbox(&toolbox, &["run", "echo"]);
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    assert!(
+        stderr(&output).contains("registered tool"),
+        "stderr was: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn run_registered_path_is_directory_exits_1() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let add = run_cli_with_config(&config, &["add", sub.to_str().unwrap()]);
+    assert_eq!(
+        add.status.code(),
+        Some(1),
+        "directories cannot be registered"
+    );
+    assert!(
+        stderr(&add).contains("not a file"),
+        "stderr was: {}",
+        stderr(&add)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn run_bare_name_matches_config_extension() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "program.bat", "@echo off\necho ran-bat");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    // A bare query resolves through the registered name with extension
+    // completion; the exact name also works.
+    let bare = run_cli_with_config(&config, &["run", "program", "x"]);
+    assert!(bare.status.success(), "stderr: {}", stderr(&bare));
+    assert!(stdout(&bare).contains("ran-bat"));
+
+    let exact = run_cli_with_config(&config, &["run", "program.bat", "x"]);
+    assert!(exact.status.success(), "stderr: {}", stderr(&exact));
+}
+
+#[cfg(windows)]
+#[test]
+fn which_bare_name_prefers_exe_in_config() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let bat = write_tool(dir.path(), "program.bat", "@echo off");
+    let exe = dir.path().join("program.exe");
+    std::fs::write(&exe, "not really an exe; only resolved, never run").unwrap();
+    let add_bat = run_cli_with_config(&config, &["add", bat.to_str().unwrap()]);
+    assert!(add_bat.status.success());
+    let add_exe = run_cli_with_config(&config, &["add", exe.to_str().unwrap()]);
+    assert!(add_exe.status.success());
+
+    let output = run_cli_with_config(&config, &["which", "program"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let resolved = PathBuf::from(stdout(&output).trim());
+    assert_eq!(resolved, exe, "the .exe candidate wins for a bare query");
+
+    let exact = run_cli_with_config(&config, &["which", "program.bat"]);
+    let resolved = PathBuf::from(stdout(&exact).trim());
+    assert_eq!(resolved, bat, "an exact name wins over completion");
+}
+
 // --- which ---
 
 #[test]
@@ -446,6 +783,20 @@ fn which_prints_absolute_path() {
 }
 
 #[test]
+fn which_resolves_config_entry() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "which-me.bat", "@echo off");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_with_config(&config, &["which", "which-me.bat"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let path = PathBuf::from(stdout(&output).trim());
+    assert_eq!(path, std::path::absolute(&source).unwrap());
+}
+
+#[test]
 fn which_missing_tool_exits_127() {
     let toolbox = Toolbox::new();
     let output = run_cli_in_toolbox(&toolbox, &["which", "nope"]);
@@ -460,154 +811,229 @@ fn which_missing_bin_dir_is_runtime_error_not_127() {
     assert!(stderr(&output).contains("bin directory not found"));
 }
 
-// --- add / remove ---
+// --- add ---
 
 #[test]
-fn add_then_run_tool() {
-    let toolbox = Toolbox::new();
-    // write_tool makes the source executable on Unix (shebang + 0o755);
-    // fs::write alone would leave it unexecutable.
-    let source = write_tool(
-        toolbox.path().parent().unwrap(),
-        "new-tool.bat",
-        "@echo off\necho added",
-    );
+fn add_custom_name() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "src.bat", "@echo off\necho renamed");
 
-    let output = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "add",
-        source.to_str().unwrap(),
-    ]);
-    assert!(output.status.success(), "stderr was: {}", stderr(&output));
-    let out = stdout(&output);
-    assert!(
-        out.contains("linked") || out.contains("copied"),
-        "stdout was: {out}"
+    let output = run_cli_with_config(
+        &config,
+        &["add", source.to_str().unwrap(), "--name", "renamed.bat"],
     );
+    assert!(output.status.success());
 
-    // The added entry is a toolbox tool even when it is a symlink pointing
-    // outside (Unix always links; Windows copies without developer mode):
-    // both outcomes run without any extra flag.
-    let run = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "run",
-        "new-tool.bat",
-    ]);
-    assert!(run.status.success(), "stderr was: {}", stderr(&run));
-    assert!(stdout(&run).contains("added"));
+    let run = run_cli_with_config(&config, &["run", "renamed.bat"]);
+    assert!(run.status.success(), "stderr: {}", stderr(&run));
+    assert!(stdout(&run).contains("renamed"));
 }
 
 #[test]
 fn add_relative_source_creates_working_entry() {
-    // Regression: the symlink target used to be the source path verbatim, so a
-    // relative source resolved against the toolbox directory and dangled. The
-    // source is now absolutized before linking/copying.
-    let toolbox = Toolbox::new();
-    let workdir = TempDir::new().unwrap();
-    write_tool(workdir.path(), REL_ADD_TOOL, REL_ADD_BODY);
+    // The source is stored as an absolute path, so the registration works
+    // regardless of the working directory used later.
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    write_tool(dir.path(), REL_ADD_TOOL, REL_ADD_BODY);
 
-    let output = run_cli_with_cwd(
-        workdir.path(),
-        &[
-            "--bin-dir",
-            toolbox.path().to_str().unwrap(),
-            "add",
-            REL_ADD_TOOL,
-        ],
+    let output = run_cli_opt(
+        None,
+        Some(&config),
+        Some(dir.path()),
+        &[],
+        &["add", REL_ADD_TOOL],
     );
     assert!(output.status.success(), "stderr was: {}", stderr(&output));
 
-    // Works for both outcomes: symlink with an absolute target and copy.
-    let run = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "run",
-        REL_ADD_TOOL,
-    ]);
+    let run = run_cli_with_config(&config, &["run", REL_ADD_TOOL]);
     assert!(run.status.success(), "stderr was: {}", stderr(&run));
     assert!(stdout(&run).contains("added-rel"));
+
+    // The stored path is absolute: `which` works from any cwd.
+    let other = TempDir::new().unwrap();
+    let which = run_cli_opt(
+        None,
+        Some(&config),
+        Some(other.path()),
+        &[],
+        &["which", REL_ADD_TOOL],
+    );
+    assert!(which.status.success(), "stderr: {}", stderr(&which));
+    assert!(
+        PathBuf::from(stdout(&which).trim()).is_absolute(),
+        "stored path should be absolute"
+    );
 }
 
 #[test]
-fn add_custom_name() {
-    let toolbox = Toolbox::new();
-    let source = toolbox.path().parent().unwrap().join("src.bat");
-    std::fs::write(&source, "@echo off\necho renamed").unwrap();
+fn add_relative_source_with_subdirectory() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    write_tool(
+        &dir.path().join("sub"),
+        "nested.bat",
+        "@echo off\necho nested",
+    );
 
-    let output = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "add",
-        source.to_str().unwrap(),
-        "--name",
-        "renamed.bat",
-    ]);
-    assert!(output.status.success());
+    let output = run_cli_opt(
+        None,
+        Some(&config),
+        Some(dir.path()),
+        &[],
+        &["add", "sub/nested.bat"],
+    );
+    assert!(output.status.success(), "stderr was: {}", stderr(&output));
 
-    let list = run_cli_in_toolbox(&toolbox, &["list"]);
-    assert!(stdout(&list).contains("renamed.bat"));
+    let run = run_cli_with_config(&config, &["run", "nested.bat"]);
+    assert!(run.status.success(), "stderr was: {}", stderr(&run));
+    assert!(stdout(&run).contains("nested"));
 }
 
 #[test]
-fn add_duplicate_fails() {
-    let toolbox = Toolbox::new();
-    let source = toolbox.path().parent().unwrap().join("dup.bat");
-    std::fs::write(&source, "@echo off").unwrap();
-
-    let first = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "add",
-        source.to_str().unwrap(),
-    ]);
-    assert!(first.status.success());
-
-    let second = run_cli(&[
-        "--bin-dir",
-        toolbox.path().to_str().unwrap(),
-        "add",
-        source.to_str().unwrap(),
-    ]);
-    assert_eq!(second.status.code(), Some(1));
-    assert!(stderr(&second).contains("already exists"));
-}
-
-#[test]
-fn remove_tool_and_directory() {
-    let toolbox = Toolbox::new();
-    let output = run_cli_in_toolbox(&toolbox, &["remove", "plain"]);
-    assert!(output.status.success());
-    assert!(stdout(&output).contains("plain"));
-
-    let list = run_cli_in_toolbox(&toolbox, &["list"]);
-    assert!(!stdout(&list).contains("plain"));
-
-    let dir_no_recursive = run_cli_in_toolbox(&toolbox, &["remove", "scripts"]);
-    assert_eq!(dir_no_recursive.status.code(), Some(1));
-    assert!(stderr(&dir_no_recursive).contains("--recursive"));
-
-    let dir_recursive = run_cli_in_toolbox(&toolbox, &["remove", "scripts", "-r"]);
-    assert!(dir_recursive.status.success());
-
-    let list = run_cli_in_toolbox(&toolbox, &["list"]);
-    assert!(!stdout(&list).contains("scripts/"));
-}
-
-#[test]
-fn remove_missing_tool_exits_127() {
-    let toolbox = Toolbox::new();
-    let output = run_cli_in_toolbox(&toolbox, &["remove", "nope"]);
-    assert_eq!(output.status.code(), Some(127));
-}
-
-#[test]
-fn remove_missing_bin_dir_is_runtime_error_not_127() {
-    let missing = PathBuf::from("definitely-missing-remove-dir");
-    let output = run_cli(&["--bin-dir", missing.to_str().unwrap(), "remove", "any-tool"]);
+fn add_missing_source_fails() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let output = run_cli_with_config(&config, &["add", "definitely-missing-source"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("bin directory not found"));
+    assert!(stderr(&output).contains("source not found"));
+}
+
+#[test]
+fn add_invalid_name_fails() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "tool.bat", "@echo off");
+    let output = run_cli_with_config(
+        &config,
+        &["add", source.to_str().unwrap(), "--name", "a/b.exe"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("invalid tool name"));
+    assert!(!config.exists(), "nothing should be written on error");
+}
+
+#[test]
+fn add_duplicate_fails_then_force_overwrites() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let first = write_tool(dir.path(), "dup.bat", "@echo off\necho first");
+    let second = write_tool(dir.path(), "other.bat", "@echo off\necho second");
+
+    let add = run_cli_with_config(&config, &["add", first.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let dup = run_cli_with_config(
+        &config,
+        &["add", second.to_str().unwrap(), "--name", "dup.bat"],
+    );
+    assert_eq!(dup.status.code(), Some(1), "duplicate name must fail");
+    assert!(
+        stderr(&dup).contains("already registered"),
+        "stderr was: {}",
+        stderr(&dup)
+    );
+
+    let forced = run_cli_with_config(
+        &config,
+        &[
+            "add",
+            second.to_str().unwrap(),
+            "--name",
+            "dup.bat",
+            "--force",
+        ],
+    );
+    assert!(forced.status.success(), "stderr was: {}", stderr(&forced));
+
+    let run = run_cli_with_config(&config, &["run", "dup.bat"]);
+    assert!(run.status.success());
+    assert!(
+        stdout(&run).contains("second"),
+        "stdout was: {}",
+        stdout(&run)
+    );
+}
+
+// --- remove ---
+
+#[test]
+fn remove_registered_tool() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "plain.bat", "@echo off\necho plain");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_with_config(&config, &["remove", "plain.bat"]);
+    assert!(output.status.success(), "stderr was: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("removed"),
+        "stdout was: {}",
+        stdout(&output)
+    );
+
+    let run = run_cli_with_config(&config, &["run", "plain.bat"]);
+    assert_eq!(run.status.code(), Some(127), "registration should be gone");
+}
+
+#[test]
+fn remove_not_registered_exits_127() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "echo.bat", ECHO_BODY);
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_with_config(&config, &["remove", "echoe"]);
+    assert_eq!(output.status.code(), Some(127));
+    let err = stderr(&output);
+    assert!(err.contains("not registered"), "stderr was: {err}");
+    assert!(err.contains("did you mean"), "stderr was: {err}");
+    assert!(err.contains("echo.bat"), "stderr was: {err}");
+}
+
+#[test]
+fn remove_does_not_delete_bin_tool() {
+    let toolbox = Toolbox::new();
+    // `echo.bat` lives in the toolbox but is not registered: remove reports
+    // it as not registered and leaves the file alone.
+    let output = run_cli_in_toolbox(&toolbox, &["remove", "echo"]);
+    assert_eq!(
+        output.status.code(),
+        Some(127),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert!(
+        toolbox.path().join(ECHO_TOOL).is_file(),
+        "manually placed toolbox entries are never deleted"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn remove_resolves_like_run() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let bat = write_tool(dir.path(), "program.bat", "@echo off\necho bat-ran");
+    let exe = dir.path().join("program.exe");
+    std::fs::write(&exe, "not really an exe; only resolved, never run").unwrap();
+    let add_bat = run_cli_with_config(&config, &["add", bat.to_str().unwrap()]);
+    assert!(add_bat.status.success());
+    let add_exe = run_cli_with_config(&config, &["add", exe.to_str().unwrap()]);
+    assert!(add_exe.status.success());
+
+    // A bare `remove program` removes the entry a bare `run program` would
+    // resolve to (the .exe registration).
+    let output = run_cli_with_config(&config, &["remove", "program"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+
+    let which = run_cli_with_config(&config, &["which", "program"]);
+    let resolved = PathBuf::from(stdout(&which).trim());
+    assert_eq!(resolved, bat, "the .bat registration should remain");
 }
 
 // --- completions ---
@@ -629,7 +1055,7 @@ fn completions_rejects_unknown_shell() {
     assert_eq!(output.status.code(), Some(2));
 }
 
-// --- usage / bin dir resolution ---
+// --- usage / bin dir / config resolution ---
 
 #[test]
 fn no_subcommand_is_usage_error() {
@@ -671,4 +1097,91 @@ fn flag_overrides_env_var() {
     let out = stdout(&output);
     assert!(out.contains(ECHO_TOOL));
     assert!(!out.contains("env-only-tool"));
+}
+
+#[test]
+fn env_var_config_is_used() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "env-reg.bat", "@echo off");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    // No `--config` flag: the RUN_CLI_CONFIG variable must take effect (a
+    // scratch config would override it, so none is injected).
+    let output = run_cli_opt(
+        None,
+        None,
+        None,
+        &[("RUN_CLI_CONFIG", config.to_str().unwrap())],
+        &["list", "--json"],
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&output)).unwrap();
+    assert!(parsed.iter().any(|tool| tool["name"] == "env-reg.bat"));
+}
+
+#[test]
+fn config_flag_overrides_env_var() {
+    let dir = TempDir::new().unwrap();
+    let flag_config = dir.path().join("flag.toml");
+    let env_config = dir.path().join("env.toml");
+    let flag_src = write_tool(dir.path(), "flag-reg.bat", "@echo off");
+    let env_src = write_tool(dir.path(), "env-reg.bat", "@echo off");
+    let add_flag = run_cli_with_config(&flag_config, &["add", flag_src.to_str().unwrap()]);
+    assert!(add_flag.status.success());
+    let add_env = run_cli_with_config(&env_config, &["add", env_src.to_str().unwrap()]);
+    assert!(add_env.status.success());
+
+    let output = run_cli_opt(
+        None,
+        Some(&flag_config),
+        None,
+        &[("RUN_CLI_CONFIG", env_config.to_str().unwrap())],
+        &["list", "--json"],
+    );
+    assert!(output.status.success());
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&output)).unwrap();
+    assert!(parsed.iter().any(|tool| tool["name"] == "flag-reg.bat"));
+    assert!(!parsed.iter().any(|tool| tool["name"] == "env-reg.bat"));
+}
+
+#[test]
+fn corrupt_config_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "not [ valid toml").unwrap();
+
+    let list = run_cli_with_config(&config, &["list"]);
+    assert_eq!(list.status.code(), Some(1));
+    assert!(
+        stderr(&list).contains("parse"),
+        "stderr was: {}",
+        stderr(&list)
+    );
+
+    let run = run_cli_with_config(&config, &["run", "any-tool"]);
+    assert_eq!(run.status.code(), Some(1));
+    assert!(
+        stderr(&run).contains("parse"),
+        "stderr was: {}",
+        stderr(&run)
+    );
+}
+
+#[test]
+fn list_does_not_create_bin_dir() {
+    let dir = TempDir::new().unwrap();
+    let bin = dir.path().join("bin");
+    let config = dir.path().join("config.toml");
+    let source = write_tool(dir.path(), "only.bat", "@echo off");
+    let add = run_cli_with_config(&config, &["add", source.to_str().unwrap()]);
+    assert!(add.status.success());
+
+    let output = run_cli_opt(Some(&bin), Some(&config), None, &[], &["list", "--json"]);
+    assert!(output.status.success());
+    assert!(
+        !bin.exists(),
+        "listing must not create the toolbox directory"
+    );
 }

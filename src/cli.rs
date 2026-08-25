@@ -36,6 +36,10 @@ pub struct Cli {
     /// to this executable (Unix: ~/.run-cli/bin).
     #[arg(short = 'b', long = "bin-dir", value_name = "PATH", help = messages::OPT_BIN_DIR_HELP)]
     pub bin_dir: Option<PathBuf>,
+    /// Custom config file; overrides RUN_CLI_CONFIG, defaults to config.toml
+    /// next to this executable (Unix: ~/.run-cli/config.toml).
+    #[arg(long = "config", value_name = "PATH", help = messages::OPT_CONFIG_HELP)]
+    pub config: Option<PathBuf>,
     /// The subcommand to run.
     #[command(subcommand)]
     pub command: Command,
@@ -75,7 +79,7 @@ pub enum Command {
 /// the tool's own exit code).
 pub fn run() -> Result<i32, Error> {
     let cli = Cli::parse();
-    let context = Context::new(cli.bin_dir.as_deref());
+    let context = Context::new(cli.bin_dir.as_deref(), cli.config.as_deref());
     match cli.command {
         Command::Run(args) => commands::run::execute(args, &context),
         Command::List(args) => commands::list::execute(args, &context),
@@ -141,6 +145,22 @@ mod tests {
     fn parses_short_bin_dir_flag() {
         let cli = parse(&["-b", "tools", "list"]).unwrap();
         assert_eq!(cli.bin_dir.as_deref().unwrap().as_os_str(), "tools");
+    }
+
+    #[test]
+    fn parses_global_config() {
+        let cli = parse(&["--config", "tools.toml", "list"]).unwrap();
+        assert_eq!(cli.config.as_deref().unwrap().as_os_str(), "tools.toml");
+    }
+
+    #[test]
+    fn config_after_tool_is_passed_through() {
+        let cli = parse(&["run", "example", "--config", "x"]).unwrap();
+        assert!(cli.config.is_none());
+        assert_eq!(
+            external_cmd_of(&cli),
+            &os_args(&["example", "--config", "x"])
+        );
     }
 
     #[test]
@@ -264,12 +284,19 @@ mod tests {
         };
         assert_eq!(args.path, PathBuf::from("C:\\tools\\x.exe"));
         assert!(args.name.is_none());
+        assert!(!args.force);
 
         let cli = parse(&["add", "x.exe", "--name", "renamed.exe"]).unwrap();
         let Command::Add(args) = cli.command else {
             panic!("expected Add");
         };
         assert_eq!(args.name.as_deref(), Some("renamed.exe"));
+
+        let cli = parse(&["add", "x.exe", "--force"]).unwrap();
+        let Command::Add(args) = cli.command else {
+            panic!("expected Add");
+        };
+        assert!(args.force);
     }
 
     #[test]
@@ -278,13 +305,13 @@ mod tests {
         let Command::Remove(args) = cli.command else {
             panic!("expected Remove");
         };
-        assert!(!args.recursive);
+        assert_eq!(args.tool, "example");
+    }
 
-        let cli = parse(&["remove", "example", "-r"]).unwrap();
-        let Command::Remove(args) = cli.command else {
-            panic!("expected Remove");
-        };
-        assert!(args.recursive);
+    #[test]
+    fn remove_recursive_flag_is_rejected() {
+        assert!(parse(&["remove", "example", "-r"]).is_err());
+        assert!(parse(&["remove", "example", "--recursive"]).is_err());
     }
 
     #[test]

@@ -25,10 +25,13 @@ pub struct ToolJson {
     /// Size in bytes for files; omitted for directories.
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<u64>,
+    /// Where the entry comes from: the config or the toolbox directory.
+    pub origin: &'static str,
 }
 
-impl From<&Tool> for ToolJson {
-    fn from(tool: &Tool) -> Self {
+impl ToolJson {
+    /// Build the serialized form of a toolbox entry with its origin.
+    pub fn new(tool: &Tool, origin: &'static str) -> Self {
         ToolJson {
             name: tool.name.clone(),
             path: tool.path.clone(),
@@ -37,6 +40,7 @@ impl From<&Tool> for ToolJson {
                 ToolKind::Directory => "directory",
             },
             size: tool.size,
+            origin,
         }
     }
 }
@@ -44,6 +48,7 @@ impl From<&Tool> for ToolJson {
 pub const APP_ABOUT: &str = "Manage and run tools from a toolbox directory";
 
 pub const OPT_BIN_DIR_HELP: &str = "Custom toolbox directory; overrides RUN_CLI_BIN, defaults to bin next to this executable (Unix: ~/.run-cli/bin)";
+pub const OPT_CONFIG_HELP: &str = "Path to the config file; overrides RUN_CLI_CONFIG, defaults to config.toml next to this executable (Unix: ~/.run-cli/config.toml)";
 
 pub const CMD_RUN_ABOUT: &str =
     "Run a tool from the toolbox; arguments after the tool name are passed through";
@@ -51,19 +56,19 @@ pub const CMD_LIST_ABOUT: &str = "List the contents of the toolbox directory";
 pub const CMD_WHICH_ABOUT: &str =
     "Print the absolute path a tool name resolves to, without running it";
 pub const CMD_ADD_ABOUT: &str =
-    "Add a file or directory to the toolbox (symlink, or copy as fallback)";
-pub const CMD_REMOVE_ABOUT: &str = "Remove a tool from the toolbox";
+    "Register a tool in the config by name and path (no files are copied or linked)";
+pub const CMD_REMOVE_ABOUT: &str = "Remove a registered tool from the config";
 pub const CMD_COMPLETIONS_ABOUT: &str = "Generate shell completion scripts";
 
 pub const OPT_CWD_HELP: &str = "Run the tool in this working directory";
 pub const OPT_ENV_HELP: &str = "Set an environment variable for the tool, as KEY=VALUE; repeatable";
 pub const OPT_JSON_HELP: &str = "Print the listing as JSON";
-pub const OPT_NAME_HELP: &str = "Add the tool under this name instead of the source file name";
-pub const OPT_RECURSIVE_HELP: &str = "Remove directories and their contents recursively";
+pub const OPT_NAME_HELP: &str = "Register the tool under this name instead of the source file name";
+pub const OPT_FORCE_HELP: &str = "Overwrite an existing entry with the same name";
 pub const OPT_SHELL_HELP: &str = "The shell to generate completions for";
 
 pub const ARG_TOOL_HELP: &str = "Name or path of the tool";
-pub const ARG_SOURCE_HELP: &str = "File or directory to add";
+pub const ARG_SOURCE_HELP: &str = "File to register";
 
 /// Prefix printed before every error message.
 pub fn error_prefix() -> &'static str {
@@ -75,13 +80,19 @@ pub fn list_header(dir: &Path, count: usize) -> String {
     format!("tools in {} ({count}):", dir.display())
 }
 
-/// Message printed when the toolbox directory contains nothing.
+/// Message printed when neither the config nor the toolbox contains anything.
 pub fn no_tools_found(dir: &Path) -> String {
     format!("no tools found in {}", dir.display())
 }
 
+/// Origin suffix of a `list` entry.
+pub fn origin_suffix(origin: &str) -> String {
+    format!(" ({origin})")
+}
+
 /// Error message for an unresolvable tool name, with an optional spelling
-/// suggestion and the list of available tools.
+/// suggestion and the list of available tools (config entries and toolbox
+/// entries combined).
 pub fn tool_not_found(
     tool: &str,
     dir: &Path,
@@ -101,8 +112,9 @@ pub fn tool_not_found(
     message
 }
 
-/// Error message for an unresolvable tool name when the toolbox could not be
-/// listed (suggestions and the available-tools list are unavailable).
+/// Error message for an unresolvable tool name when the available tools
+/// could not be listed (suggestions and the available-tools list are
+/// unavailable).
 pub fn tool_not_found_list_failed(tool: &str, dir: &Path) -> String {
     format!(
         "tool '{tool}' not found in {} (could not list available tools)",
@@ -110,17 +122,45 @@ pub fn tool_not_found_list_failed(tool: &str, dir: &Path) -> String {
     )
 }
 
-/// Confirmation printed after `add` created a symlink.
-pub fn added_linked(source: &Path, dest: &Path) -> String {
-    format!("linked {} -> {}", source.display(), dest.display())
+/// Error message for `remove` when the name is not registered in the config,
+/// with an optional spelling suggestion and the list of registered names.
+pub fn tool_not_registered(
+    tool: &str,
+    config_path: &Path,
+    available: &[String],
+    suggestion: Option<&str>,
+) -> String {
+    let mut message = format!(
+        "tool '{tool}' is not registered in {}",
+        config_path.display()
+    );
+    if let Some(suggestion) = suggestion {
+        message.push_str(&format!("\ndid you mean '{suggestion}'?"));
+    }
+    if !available.is_empty() {
+        message.push_str("\nregistered tools:");
+        for name in available {
+            message.push_str(&format!("\n  - {name}"));
+        }
+    }
+    message
 }
 
-/// Confirmation printed after `add` fell back to copying.
-pub fn added_copied(source: &Path, dest: &Path) -> String {
-    format!("copied {} to {}", source.display(), dest.display())
+/// Error message for `remove` when the config could not be read (registered
+/// tools are unavailable for suggestions).
+pub fn tool_not_registered_no_list(tool: &str, config_path: &Path) -> String {
+    format!(
+        "tool '{tool}' is not registered in {} (could not read the config)",
+        config_path.display()
+    )
 }
 
-/// Confirmation printed after `remove` deleted a tool.
-pub fn removed(path: &Path) -> String {
-    format!("removed {}", path.display())
+/// Confirmation printed after `add` registered a tool.
+pub fn added(name: &str, path: &Path) -> String {
+    format!("added {name} -> {}", path.display())
+}
+
+/// Confirmation printed after `remove` unregistered a tool.
+pub fn removed(name: &str) -> String {
+    format!("removed {name}")
 }

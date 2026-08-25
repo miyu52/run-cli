@@ -5,6 +5,7 @@
 
 use thiserror::Error;
 
+use crate::config::ConfigError;
 use crate::runner::RunError;
 use crate::toolbox::ToolboxError;
 use crate::{EXIT_ERROR, EXIT_TOOL_NOT_FOUND};
@@ -15,6 +16,9 @@ pub enum Error {
     /// A toolbox operation failed.
     #[error("{0}")]
     Toolbox(#[from] ToolboxError),
+    /// A config operation failed.
+    #[error("{0}")]
+    Config(#[from] ConfigError),
     /// Spawning or waiting for a tool failed.
     #[error("{0}")]
     Run(#[from] RunError),
@@ -24,6 +28,7 @@ pub enum Error {
     /// An unresolvable tool name, with a rich message (spelling suggestion and
     /// available tools). Distinct from [`ToolboxError::ToolNotFound`], which is
     /// the plain domain error; this variant carries the pre-formatted message.
+    /// Also used for `remove` when the name is not registered in the config.
     #[error("{message}")]
     RichToolNotFound {
         /// Message printed to stderr.

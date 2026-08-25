@@ -1,26 +1,28 @@
-//! The `remove` command: remove a tool from the toolbox.
+//! The `remove` command: unregister a tool from the config.
 
-use crate::commands::{Context, map_tool_error};
+use crate::commands::{Context, tool_not_registered_error};
+use crate::config::Config;
 use crate::error::Error;
 use crate::messages;
 
 /// Arguments for `run-cli remove`.
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    /// Name or path of the tool.
+    /// Name of the registered tool.
     #[arg(value_name = "TOOL", help = messages::ARG_TOOL_HELP)]
     pub tool: String,
-    /// Remove directories and their contents recursively.
-    #[arg(short = 'r', long = "recursive", help = messages::OPT_RECURSIVE_HELP)]
-    pub recursive: bool,
 }
 
-/// Remove the tool from the toolbox.
+/// Unregister the tool from the config. Never deletes any file: the source
+/// of an `add` and manually placed toolbox entries are left untouched.
 pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
-    let path = context
-        .toolbox
-        .remove(&args.tool, args.recursive)
-        .map_err(|err| map_tool_error(&context.toolbox, &args.tool, err))?;
-    println!("{}", messages::removed(&path));
-    Ok(0)
+    let mut config = Config::load(&context.config_path)?;
+    match config.remove(&args.tool) {
+        Some(tool) => {
+            config.save_atomic(&context.config_path)?;
+            println!("{}", messages::removed(&tool.name));
+            Ok(0)
+        }
+        None => Err(tool_not_registered_error(context, &args.tool)),
+    }
 }

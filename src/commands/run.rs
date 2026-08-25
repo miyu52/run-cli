@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::commands::{Context, resolve_absolute};
+use crate::commands::{Context, resolve_tool};
 use crate::error::Error;
 use crate::messages;
 use crate::runner::{self, Invocation, RunError, RunOptions};
@@ -49,7 +49,7 @@ pub fn execute(args: Args, context: &Context) -> Result<i32, Error> {
     let tool = tool.to_str().ok_or(RunError::ToolNameNotUtf8)?;
     // Absolutize before spawning so that a relative tool path (e.g. from a
     // relative toolbox directory) is not resolved against the child's `--cwd`.
-    let absolute = resolve_absolute(&context.toolbox, tool)?;
+    let absolute = resolve_tool(context, tool)?;
     let invocation = Invocation::from_path(absolute);
     let options = RunOptions {
         cwd: args.cwd,
@@ -69,7 +69,7 @@ mod tests {
             env: Vec::new(),
             command: ExternalCommand::Cmd(Vec::new()),
         };
-        let context = Context::new(None);
+        let context = Context::new(None, None);
         assert!(matches!(
             execute(args, &context),
             Err(Error::Run(RunError::MissingToolName))
