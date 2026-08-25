@@ -65,7 +65,7 @@ run-cli [-b/--bin-dir <PATH>] [--config <PATH>] <子命令>
 | 子命令 | 说明 |
 | --- | --- |
 | `run <tool> [--cwd DIR] [--env K=V]... [args...]` | 运行工具；`--cwd`/`--env` 为 run-cli 自身的选项 |
-| `list [--json]` | 列出全部工具（config 注册 + bin 内容，目录带 `/` 后缀，按名称排序） |
+| `list [--json]` | 列出全部工具；人类格式按来源分组显示（config 组在前、bin 组在后，每组 `tools in {path}({count}):` 组头 + 条目，目录带 `/` 后缀）；与 config 精确同名的 bin 条目标注 `(shadowed)` |
 | `which <tool>` | 打印工具解析后的绝对路径 |
 | `add <path> [--name <NAME>] [--force]` | 注册工具：把 name → 绝对路径写入 config（**不复制、不链接**） |
 | `remove <tool>` | 从 config 注销工具（**不删除任何文件**） |
@@ -126,7 +126,9 @@ run-cli 自身选项必须放在工具名之前：
 ]
 ```
 
-- `origin`：`"config"`（config 注册）或 `"bin"`（bin 目录）；同名时 config 条目优先展示
+- `origin`：`"config"`（config 注册）或 `"bin"`（bin 目录）
+- `shadowed`：bin 条目与 config 注册**精确同名**（被遮蔽）时为 `true`，否则省略；config 条目恒省略
+- 同名条目**全部显示**（不隐藏）；人类格式中被遮蔽的 bin 条目带 ` (shadowed)` 后缀
 - 目录条目不包含 `size`
 
 ## 退出码

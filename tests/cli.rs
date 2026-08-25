@@ -79,10 +79,14 @@ fn write_tool(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
-/// A toolbox directory inside a temp dir, with an isolated config file (the
-/// default config location is never touched in tests).
+/// A toolbox directory inside a temp dir, with an isolated config file in a
+/// separate temp dir (so the config file itself never pollutes the toolbox
+/// listing, and the real default config location is never touched).
 struct Toolbox {
     dir: TempDir,
+    /// Keeps the config's temp directory alive; only the derived path is used.
+    #[expect(dead_code)]
+    config_dir: TempDir,
     config: PathBuf,
 }
 
@@ -98,8 +102,10 @@ impl Toolbox {
         write_tool(&dir.path().join("scripts"), "sub.bat", "@echo off\necho %*");
         #[cfg(not(windows))]
         write_tool(&dir.path().join("scripts"), "sub", "echo \"$*\"");
+        let config_dir = TempDir::new().unwrap();
         Toolbox {
-            config: dir.path().join("config.toml"),
+            config: config_dir.path().join("config.toml"),
+            config_dir,
             dir,
         }
     }
@@ -233,6 +239,57 @@ fn list_json_is_valid_and_contains_entries() {
 }
 
 #[test]
+fn list_groups_entries_by_source() {
+    let toolbox = Toolbox::new();
+    let source = toolbox.path().parent().unwrap().join("from-config.bat");
+    std::fs::write(&source, "@echo off\necho from-config").unwrap();
+    let add = run_cli_opt(
+        Some(toolbox.path()),
+        Some(&toolbox.config),
+        None,
+        &[],
+        &["add", source.to_str().unwrap()],
+    );
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    let output = run_cli_in_toolbox(&toolbox, &["list"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    let lines: Vec<&str> = out.lines().collect();
+    // Config group first with its own header and entries, then the bin group
+    // (the toolbox has 5 entries).
+    assert!(
+        lines[0].contains(&toolbox.config.display().to_string()) && lines[0].contains("(1):"),
+        "config group header was: {}",
+        lines[0]
+    );
+    assert_eq!(lines[1], "  - from-config.bat");
+    assert!(
+        lines[2].contains(&toolbox.path().display().to_string()) && lines[2].contains("(5):"),
+        "bin group header was: {}",
+        lines[2]
+    );
+    assert_eq!(lines.len(), 2 + 1 + 5, "2 headers + 6 entries");
+}
+
+#[test]
+fn list_bin_only_has_single_group() {
+    let toolbox = Toolbox::new();
+    let output = run_cli_in_toolbox(&toolbox, &["list"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    let lines: Vec<&str> = out.lines().collect();
+    // No config entries: only the bin group is shown, without a config header.
+    assert!(
+        lines[0].contains(&toolbox.path().display().to_string()),
+        "first line should be the bin group header: {}",
+        lines[0]
+    );
+    assert!(!out.contains(&toolbox.config.display().to_string()));
+    assert_eq!(lines.len(), 1 + 5, "1 header + 5 entries");
+}
+
+#[test]
 fn list_merges_config_and_bin_with_origins() {
     let toolbox = Toolbox::new();
     let source = toolbox.path().parent().unwrap().join("from-config.bat");
@@ -282,8 +339,57 @@ fn list_config_shadows_bin_same_name() {
         .iter()
         .filter(|tool| tool["name"] == ECHO_TOOL)
         .collect();
-    assert_eq!(matches.len(), 1, "the config entry shadows the bin entry");
-    assert_eq!(matches[0]["origin"], "config");
+    // Both entries are shown; the toolbox one is marked as shadowed.
+    assert_eq!(
+        matches.len(),
+        2,
+        "both the config and the bin entry are listed"
+    );
+    let config_entry = matches
+        .iter()
+        .find(|tool| tool["origin"] == "config")
+        .unwrap();
+    assert!(
+        config_entry.get("shadowed").is_none(),
+        "config entries are never shadowed"
+    );
+    let bin_entry = matches.iter().find(|tool| tool["origin"] == "bin").unwrap();
+    assert_eq!(bin_entry["shadowed"], true);
+}
+
+#[test]
+fn list_marks_shadowed_bin_entry_human_readable() {
+    let toolbox = Toolbox::new();
+    let source = toolbox.path().parent().unwrap().join("shadow.bat");
+    std::fs::write(&source, "@echo off\necho shadow").unwrap();
+    let add = run_cli_opt(
+        Some(toolbox.path()),
+        Some(&toolbox.config),
+        None,
+        &[],
+        &["add", source.to_str().unwrap(), "--name", ECHO_TOOL],
+    );
+    assert!(add.status.success(), "stderr: {}", stderr(&add));
+
+    let output = run_cli_in_toolbox(&toolbox, &["list"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(
+        out.contains(&format!("{ECHO_TOOL} (shadowed)")),
+        "shadowed bin entry should be marked: {out}"
+    );
+    // A config entry of the same name is not marked.
+    let config_lines: Vec<&str> = out
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.starts_with("tools in"))
+        .collect();
+    assert!(
+        config_lines
+            .iter()
+            .any(|line| line.contains(ECHO_TOOL) && !line.contains("shadowed")),
+        "config entry should not be marked: {out}"
+    );
 }
 
 #[test]

@@ -46,7 +46,7 @@ cargo fmt                      # 必须保持格式化一致
 - **解析顺序（run/which）**：`commands::resolve_tool` = config 精确/补全命中 → bin 目录兜底。config 命中是**整体名字级**遮蔽（config 对该名字任一候选命中即生效，bin 同名整体被遮蔽）。config 命中但存储路径**缺失/非文件 → exit 1 运行时错误，绝不回退 bin**（注册失效要响亮暴露，且无拼写建议）。config 文件**损坏**（TOML 解析失败）→ 所有读 config 的命令直接报错 exit 1，不静默跳过。
 - **`add`（config 注册）**：源必须存在且是**文件**（目录报错，v1 仅支持文件）；名字默认 = 源**全文件名**（`program.exe` 注册为 `program.exe`），`--name` 可覆盖且必须为单文件组件（`validate_name`）；源先 `std::path::absolute` 绝对化再存储（相对路径/`subdir/x` 均可，不 canonicalize，避免 `\\?\` 前缀）；**重名默认报错（exit 1），`--force` 覆盖**；重名判定与 lookup 同规则（Windows 上大小写不敏感、裸名按扩展名补全匹配）。绝不触碰 bin 目录。
 - **`remove`（config 注销）**：只处理 config 条目，使用与 run **相同**的 lookup（`remove program` 移除 `run program` 会命中的那条）；未注册 → 富 127（建议 = config 名称）；**绝不删除任何文件**（注册源、bin 手工工具都不动）。`-r/--recursive` 已移除。
-- **`list`**：合并 config 条目与 bin 条目，按名称排序；**同名去重（config 优先展示）**；JSON 每条含 `"origin": "config" | "bin"`，人类格式带 `(config)`/`(bin)` 后缀；config 条目路径缺失**跳过**（与 bin 悬空链接同一策略）；**bin 目录缺失/非目录视为空**（不报错，config 可能是唯一来源）。
+- **`list`**：合并 config 条目与 bin 条目，**全部显示**；人类格式**按来源分组**（config 组在前、bin 组在后，每组 `tools in {path}({count}):` 组头 + 缩进条目，空组不显示，全空输出 `no_tools_found`）；**与 config 精确同名的 bin 条目标注 ` (shadowed)`**（判定 = `config.lookup(tool.name)`，即精确同名，不按扩展名补全）；JSON 每条含 `"origin": "config" | "bin"`，被遮蔽的 bin 条目含 `"shadowed": true`（false 时省略），合并后按名称排序；config 条目路径缺失**跳过**（与 bin 悬空链接同一策略）；**bin 目录缺失/非目录视为空**（不报错，config 可能是唯一来源）。
 - **config 定位独立于 bin-dir**：`--config <PATH>`（全局，须在子命令前）> `RUN_CLI_CONFIG`（空值视为未设置）> 平台默认（Windows：exe 同目录 `config.toml`；Unix：`~/.run-cli/config.toml`）。config 文件缺失 = 空注册表；`save_atomic` 创建父目录（如 `~/.run-cli`）。
 
 ## 关键技术约束（踩过的坑，不要重犯）

@@ -27,11 +27,20 @@ pub struct ToolJson {
     size: Option<u64>,
     /// Where the entry comes from: the config or the toolbox directory.
     pub origin: &'static str,
+    /// Whether a toolbox entry is shadowed by a config registration of the
+    /// same name; omitted when false.
+    #[serde(skip_serializing_if = "is_false")]
+    pub shadowed: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl ToolJson {
-    /// Build the serialized form of a toolbox entry with its origin.
-    pub fn new(tool: &Tool, origin: &'static str) -> Self {
+    /// Build the serialized form of a toolbox entry with its origin and
+    /// shadowing state.
+    pub fn new(tool: &Tool, origin: &'static str, shadowed: bool) -> Self {
         ToolJson {
             name: tool.name.clone(),
             path: tool.path.clone(),
@@ -41,6 +50,7 @@ impl ToolJson {
             },
             size: tool.size,
             origin,
+            shadowed,
         }
     }
 }
@@ -75,19 +85,23 @@ pub fn error_prefix() -> &'static str {
     "run-cli: error: "
 }
 
-/// Header line of the human-readable `list` output.
+/// Header line of one source group in the human-readable `list` output.
 pub fn list_header(dir: &Path, count: usize) -> String {
-    format!("tools in {} ({count}):", dir.display())
+    format!("tools in {}({}):", dir.display(), count)
 }
 
 /// Message printed when neither the config nor the toolbox contains anything.
-pub fn no_tools_found(dir: &Path) -> String {
-    format!("no tools found in {}", dir.display())
+pub fn no_tools_found(bin_dir: &Path, config_path: &Path) -> String {
+    format!(
+        "no tools found in {} or {}",
+        config_path.display(),
+        bin_dir.display()
+    )
 }
 
-/// Origin suffix of a `list` entry.
-pub fn origin_suffix(origin: &str) -> String {
-    format!(" ({origin})")
+/// Suffix marking a toolbox entry shadowed by a config registration.
+pub fn shadowed_suffix() -> &'static str {
+    " (shadowed)"
 }
 
 /// Error message for an unresolvable tool name, with an optional spelling
